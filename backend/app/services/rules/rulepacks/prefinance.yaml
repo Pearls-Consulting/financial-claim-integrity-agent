@@ -1,0 +1,25 @@
+# Gate 4 — pre-finance package completeness (the review described by the VRM
+# director before referral to Finance, SP-01-04-05-02 step 7).
+rules:
+  - id: prefinance.attachments_complete
+    title_en: Required attachments are filed on the invoice
+    title_ar: اكتمال المرفقات المطلوبة على الفاتورة
+    check: attachments_complete
+    severity: fail
+    params:
+      required:
+        - contract
+        - boq
+        - award letter
+        - work commencement
+        - commercial registration
+        - zakat certificate
+        - gosi certificate
+    source: { doc: SP-01-04-05-02, ref: step 6 }
+
+  - id: prefinance.vat_treatment
+    title_en: VAT charged or exemption declared
+    title_ar: احتساب الضريبة أو التصريح بالإعفاء
+    check: vat_treatment_declared
+    severity: fail
+    source: { doc: VAT Implementing Regulations, ref: exemptions }

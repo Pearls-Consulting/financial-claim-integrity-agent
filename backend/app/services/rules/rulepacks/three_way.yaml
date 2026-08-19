@@ -1,0 +1,33 @@
+# Gate 4 — three-way match: contract/BoQ ↔ ERP product receipt ↔ invoice.
+# The procedure posts the receipt (SPM-PM01 §9.3 step 5, إيصال استلام
+# المنتجات) but states no comparison criterion; the criterion comes from the
+# procurement law (pay only for executed/received work) and the contract's
+# BoQ quantities.
+rules:
+  - id: three_way.receipt_present
+    title_en: ERP product receipt is posted for the claim
+    title_ar: إيصال استلام المنتجات مسجل في النظام
+    check: receipt_present
+    severity: warn
+    source: { doc: SPM-PM01, ref: "§9.3 step 5 — إيصال استلام المنتجات" }
+
+  - id: three_way.billed_vs_received
+    title_en: Quantities billed do not exceed quantities received
+    title_ar: الكميات المفوترة لا تتجاوز الكميات المستلمة
+    check: billed_vs_received
+    severity: fail
+    source: { doc: Procurement Law Exec. Regulations, ref: payment for executed work }
+
+  - id: three_way.received_within_boq
+    title_en: Quantities received stay within the contracted BoQ
+    title_ar: الكميات المستلمة ضمن كميات جدول الكميات
+    check: received_within_boq
+    severity: fail
+    source: { doc: contract, ref: BoQ quantities }
+
+  - id: three_way.claimed_within_certified_value
+    title_en: Claimed amount within the value of received work
+    title_ar: مبلغ المطالبة ضمن قيمة الأعمال المستلمة
+    check: claimed_within_certified_value
+    severity: fail
+    source: { doc: Procurement Law Exec. Regulations, ref: progress payments }

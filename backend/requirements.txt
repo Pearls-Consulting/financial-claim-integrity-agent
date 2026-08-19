@@ -1,0 +1,42 @@
+# Web framework
+fastapi>=0.115
+uvicorn[standard]>=0.32
+
+# Config / validation
+pydantic>=2.9
+pydantic-settings>=2.6
+
+# Multipart form parsing for the ad-hoc submission endpoint (approach-1 demo)
+python-multipart>=0.0.20
+
+# Rulepacks are YAML so consultants can edit rules without touching code
+PyYAML>=6.0
+
+# Deterministic date validation (Umm al-Qura) — the AI never does date math.
+# Same library proven in the prequalification agent.
+hijridate>=0.3
+
+# AI pipeline — the `azure` extractor (CU Layout OCR + GPT structuring) and
+# the `gpt` judge
+openai>=1.54
+azure-ai-contentunderstanding>=1.0
+azure-core>=1.30
+
+# Deterministic QR decode off invoice PDFs (extraction/qr.py) — pypdfium2 =
+# Google PDFium (BSD-3, safe to ship, unlike AGPL PyMuPDF); zxing-cpp decodes.
+# numpy is NOT transitive — omitting it silently disables rasterization.
+pypdfium2>=4.30
+zxing-cpp>=2.2
+numpy>=1.26
+
+# Phase-2 QR validation (validators/zatca_qr.validate_phase2): ECDSA signature
+# verification over the invoice hash, secp256k1
+cryptography>=42.0
+
+# --- wired later ---
+# anthropic>=0.92        # Claude extractor/judge engines
+# sqlalchemy>=2.0        # persistence once the demo outgrows in-memory
+# alembic>=1.13
+
+# Tests
+pytest>=8.0

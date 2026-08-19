@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+/* Spectral — editorial serif for display/headings (matches the prequal agent) */
+@import "@fontsource/spectral/400.css";
+@import "@fontsource/spectral/500.css";
+@import "@fontsource/spectral/600.css";
+/* IBM Plex Sans — UI sans */
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+/* IBM Plex Sans Arabic — first-class Arabic/RTL */
+@import "@fontsource/ibm-plex-sans-arabic/400.css";
+@import "@fontsource/ibm-plex-sans-arabic/500.css";
+@import "@fontsource/ibm-plex-sans-arabic/600.css";
+
+@theme {
+  --font-sans: "IBM Plex Sans", "IBM Plex Sans Arabic", system-ui, sans-serif;
+  --font-heading: "Spectral", Georgia, serif;
+  --font-arabic: "IBM Plex Sans Arabic", "IBM Plex Sans", sans-serif;
+
+  /* SDB brand (deploy/sdb config of the prequalification agent) */
+  --color-background: oklch(0.972 0.002 248); /* light neutral canvas */
+  --color-foreground: oklch(0.27 0.012 245); /* slate ink */
+  --color-muted: oklch(0.952 0.0025 248);
+  --color-muted-foreground: oklch(0.52 0.014 245);
+  --color-border: oklch(0.905 0.004 245);
+  --color-card: oklch(1 0 0); /* white cards lift off the gray canvas */
+  --color-primary: #0a3a5b; /* SDB navy */
+  --color-primary-foreground: #ffffff;
+  --color-secondary: oklch(0.936 0.012 240); /* washed navy for chips/steps */
+  --color-secondary-foreground: #0a3a5b;
+  --color-destructive: #b42318;
+  --color-ring: #0a3a5b;
+  --color-input: oklch(0.905 0.004 245);
+
+  --color-ok: #00874b; /* SDB green */
+  --color-warn: oklch(0.62 0.13 70); /* amber — needs a human look */
+}
+
+body {
+  @apply bg-background text-foreground font-sans antialiased;
+}
+
+/* Display face: editorial serif in English, Plex Arabic when the document
+   flips to Arabic — one class serves both directions. */
+.font-display {
+  font-family: var(--font-heading);
+}
+html[lang="ar"] .font-display {
+  font-family: var(--font-arabic);
+}

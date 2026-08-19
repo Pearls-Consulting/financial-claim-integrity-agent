@@ -1,0 +1,51 @@
+# Gate 1 — intake & authenticity.
+# Sources: SP-01-04-05-02 step 1 defines WHO checks; the actual criteria come
+# from ZATCA e-invoicing regulations and VAT law. POC-P01 rules slot in here
+# once the client provides the policy.
+rules:
+  - id: intake.metadata_complete
+    title_en: Vendor-entered claim fields are complete
+    title_ar: اكتمال بيانات المطالبة المدخلة من المورد
+    check: metadata_complete
+    severity: fail
+    params:
+      fields: [invoice_no, payment_no, claim_type, claim_date]
+    source: { doc: SP-01-04-05-02, ref: step 1 }
+
+  - id: intake.invoice_no_matches
+    title_en: Invoice number matches the invoice document
+    title_ar: مطابقة رقم الفاتورة مع مستند الفاتورة
+    check: invoice_no_matches
+    severity: fail
+    source: { doc: SP-01-04-05-02, ref: step 1 }
+
+  - id: intake.vat_math
+    title_en: Claim total equals base + VAT
+    title_ar: إجمالي المطالبة يساوي الأساس مضافاً إليه الضريبة
+    check: vat_math
+    severity: fail
+    source: { doc: VAT Implementing Regulations, ref: art. 53 }
+
+  - id: intake.qr_present
+    title_en: Tax invoice carries a QR code
+    title_ar: الفاتورة الضريبية تحمل رمز استجابة
+    check: qr_present
+    severity: fail
+    source: { doc: ZATCA e-invoicing, ref: phase-1 QR requirement }
+
+  - id: intake.qr_authentic
+    title_en: QR decodes as ZATCA TLV and matches the invoice
+    title_ar: رمز الاستجابة نظامي ويطابق بيانات الفاتورة
+    check: qr_authentic
+    severity: fail
+    source: { doc: ZATCA e-invoicing, ref: TLV tags 1-5 }
+
+  # Deliberately NOT strict: phase-2 obligation is per-vendor (revenue waves),
+  # unknowable offline. The check itself tiers the severity — absent/pseudo
+  # warn (route to Fatoora-app confirmation), failed signature = fail.
+  - id: intake.qr_phase2
+    title_en: Phase-2 cryptographic attestation (tags 6-9)
+    title_ar: التوثيق التشفيري للمرحلة الثانية (الوسوم 6-9)
+    check: qr_phase2
+    severity: warn
+    source: { doc: ZATCA e-invoicing, ref: phase-2 security features, integration waves }

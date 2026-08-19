@@ -1,0 +1,65 @@
+{
+  "alufuq-it/TEST-valid_phase2-TINV-2026-1001.pdf": {
+    "fixture": "valid_phase2",
+    "expected_phase2": "valid",
+    "invoice_no": "TINV-2026-1001",
+    "vendor_en": "Al-Ufuq IT Company",
+    "vendor_ar": "شركة الأفق لتقنية المعلومات",
+    "vat_number": "310122393500003",
+    "total": 138000.0
+  },
+  "alufuq-it/TEST-phase1_only-TINV-2026-1002.pdf": {
+    "fixture": "phase1_only",
+    "expected_phase2": "absent",
+    "invoice_no": "TINV-2026-1002",
+    "vendor_en": "Al-Ufuq IT Company",
+    "vendor_ar": "شركة الأفق لتقنية المعلومات",
+    "vat_number": "310122393500003",
+    "total": 46000.0
+  },
+  "alufuq-it/TEST-pseudo_phase2-TINV-2026-1003.pdf": {
+    "fixture": "pseudo_phase2",
+    "expected_phase2": "pseudo",
+    "invoice_no": "TINV-2026-1003",
+    "vendor_en": "Al-Ufuq IT Company",
+    "vendor_ar": "شركة الأفق لتقنية المعلومات",
+    "vat_number": "310122393500003",
+    "total": 92000.0
+  },
+  "alufuq-it/TEST-tampered-TINV-2026-1004.pdf": {
+    "fixture": "tampered",
+    "expected_phase2": "invalid_signature",
+    "invoice_no": "TINV-2026-1004",
+    "vendor_en": "Al-Ufuq IT Company",
+    "vendor_ar": "شركة الأفق لتقنية المعلومات",
+    "vat_number": "310122393500003",
+    "total": 74750.0
+  },
+  "modern-construction/TEST-fake_face-INV-2026-0117.pdf": {
+    "fixture": "fake_face",
+    "expected_phase2": "pseudo_or_absent_irrelevant",
+    "invoice_no": "INV-2026-0117",
+    "vendor_en": "Modern Construction Contracting Co.",
+    "vendor_ar": "شركة البناء الحديث للمقاولات",
+    "vat_number": "301455678900017",
+    "total": 437000.0
+  },
+  "demo-vendor/Invoice-Alwaha-INV-2026-0342_real.pdf": {
+    "fixture": "valid_phase2",
+    "expected_phase2": "valid",
+    "invoice_no": "INV-2026-0342",
+    "vendor_en": "Al-Waha Office Supplies Co.",
+    "vendor_ar": "شركة الواحة لتجهيزات المكاتب",
+    "vat_number": "310987654300003",
+    "total": 149500.0
+  },
+  "demo-vendor/Invoice-Alwaha-INV-2026-0342_tampered.pdf": {
+    "fixture": "tampered",
+    "expected_phase2": "invalid_signature",
+    "invoice_no": "INV-2026-0342",
+    "vendor_en": "Al-Waha Office Supplies Co.",
+    "vendor_ar": "شركة الواحة لتجهيزات المكاتب",
+    "vat_number": "310987654300003",
+    "total": 149500.0
+  }
+}

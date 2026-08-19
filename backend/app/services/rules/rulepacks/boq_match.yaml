@@ -1,0 +1,31 @@
+# Gate 2 — BoQ / contract match. Per-contract parameters (unit prices,
+# payment schedule) come from the contract & BoQ themselves; the procurement
+# law's Executive Regulations govern مستخلصات sequencing and limits.
+rules:
+  - id: boq.lines_match
+    title_en: Invoice lines match the Bill of Quantities
+    title_ar: مطابقة بنود الفاتورة مع جدول الكميات
+    check: boq_lines_match
+    severity: fail
+    source: { doc: contract, ref: BoQ }
+
+  - id: boq.cumulative_within_contract
+    title_en: Cumulative claims within contract value
+    title_ar: إجمالي المطالبات ضمن قيمة العقد
+    check: cumulative_within_contract
+    severity: fail
+    source: { doc: Procurement Law Exec. Regulations, ref: progress payments }
+
+  - id: boq.payment_sequence
+    title_en: Payment number follows the prior sequence
+    title_ar: رقم الدفعة يتبع تسلسل الدفعات السابقة
+    check: payment_sequence
+    severity: warn
+    source: { doc: contract, ref: payment schedule }
+
+  - id: boq.final_claim_closes_contract
+    title_en: Final claim closes out the contract value
+    title_ar: الدفعة النهائية تغلق كامل قيمة العقد
+    check: final_claim_closes_contract
+    severity: warn
+    source: { doc: Procurement Law Exec. Regulations, ref: final settlement }

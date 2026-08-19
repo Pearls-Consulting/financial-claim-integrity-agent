@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+.env
+node_modules/
+dist/
+.vite/
+*.db
+*.db-wal
+*.db-shm
+.cache/
+.venv/
+.pytest_cache/
+backend/uploads/
+scratch_*.log
+*.tsbuildinfo
+
+# Real client material — never in git; only synthetic test_scenarios fixtures are tracked.
+supporting_docs/docs/
+supporting_docs/example_documents/
+supporting_docs/screenshots_from_client/

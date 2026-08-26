@@ -1,0 +1,27 @@
+# Gate 4 — final check: penalties & delay. The procedure has NO control here;
+# these rules exist because vendor input feeds the auto-generated COC and the
+# client's own example (penalized vendor, COC says "no delay") slipped through
+# every gate. Penalties are entered manually; the contract's own penalty
+# CLAUSES are read from the contract document and measured against that record
+# (final.penalties_vs_contract).
+rules:
+  - id: final.delay_vs_penalties
+    title_en: COC delay/stoppage answers consistent with penalties
+    title_ar: اتساق إجابات التأخير والإيقاف مع سجل الغرامات
+    check: coc_delay_vs_penalties
+    severity: fail
+    source: { doc: internal audit, ref: client-reported contradiction case }
+
+  - id: final.delay_from_dates
+    title_en: Completion/delivery date within the contract period
+    title_ar: تاريخ الإنجاز / التسليم ضمن مدة العقد
+    check: delay_from_dates
+    severity: fail
+    source: { doc: contract, ref: "duration / delivery date; GTPL delay penalties" }
+
+  - id: final.penalties_vs_contract
+    title_en: Penalty record vs the contract's penalty clauses
+    title_ar: مطابقة سجل الغرامات مع بنود الغرامات في العقد
+    check: penalties_vs_contract_terms
+    severity: fail
+    source: { doc: contract, ref: "penalty clauses (delay rate / ceiling)" }

@@ -1,0 +1,70 @@
+# Deploy the SDB demo on every push to main (or manually via Run workflow).
+#
+# Gates first (UI typecheck + build, full backend test suite), then ships:
+# the runner uploads only the built ui/dist; the server fetches the code
+# itself from GitHub via its deploy key and runs deploy/ops/remote_deploy.sh
+# (link state -> symlink flip -> restart -> health check).
+#
+# Required repo secret:
+#   DEPLOY_SSH_KEY — private half of the dedicated CI keypair whose public
+#                    half is in forge@server:~/.ssh/authorized_keys.
+name: Deploy SDB demo
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Never interleave two deploys (restarts would collide).
+concurrency:
+  group: deploy-demo
+  cancel-in-progress: false
+
+env:
+  SERVER: forge@143.110.175.251
+  # Pinned host key — no blind accept-new on the runner.
+  SERVER_HOST_KEY: "143.110.175.251 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKfmvWw2YsU3wRrD2NGjUy0MKIa5+g94XiXYqUOmPkOg"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---------------------------------------------------------- gates
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: UI install + typecheck + build
+        working-directory: ui
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Backend tests
+        working-directory: backend
+        run: |
+          pip install -q -r requirements.txt
+          python -m pytest tests -q
+
+      # ---------------------------------------------------------- ship
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$SERVER_HOST_KEY" > ~/.ssh/known_hosts
+
+      - name: Upload UI bundle
+        run: tar -czf - -C ui dist | ssh "$SERVER" "cat > /tmp/ui-dist-${GITHUB_SHA}.tgz"
+
+      - name: Deploy on server
+        run: ssh "$SERVER" "bash -s -- ${GITHUB_SHA}" < deploy/ops/remote_deploy.sh

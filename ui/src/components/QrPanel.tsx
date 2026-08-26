@@ -12,14 +12,14 @@ import type { Claim, QrSummary } from "@/types/domain"
  */
 
 const PHASE2_META: Record<string, { en: string; ar: string; status: "ok" | "warn" | "fail" }> = {
-  valid: { en: "Phase-2 signature verifies", ar: "توقيع المرحلة الثانية صحيح", status: "ok" },
+  valid: { en: "Phase-2 signature verifies", ar: "التوقيع الرقمي للمرحلة الثانية صحيح", status: "ok" },
   absent: { en: "Phase-1 only (no attestation)", ar: "المرحلة الأولى فقط (بدون توثيق)", status: "warn" },
   pseudo: { en: "Imitation phase-2 tags", ar: "وسوم مرحلة ثانية مقلّدة", status: "warn" },
   invalid_signature: { en: "Signature does NOT verify", ar: "التوقيع الرقمي غير صحيح", status: "fail" },
 }
 
 export function QrPanel({ qr, claim }: { qr: QrSummary; claim?: Claim | null }) {
-  const { t, pick } = useLang()
+  const { t, pick, lang } = useLang()
   const { openDocument } = usePdfViewer()
 
   if (!qr.present) {
@@ -115,14 +115,14 @@ export function QrPanel({ qr, claim }: { qr: QrSummary; claim?: Claim | null }) 
         ))}
       </div>
 
-      {(qr.phase2_problems.length > 0 || qr.phase2_notes.length > 0) && (
+      {(qr.phase2_problems.length > 0 || (lang === "en" && qr.phase2_notes.length > 0)) && (
         <ul className="text-muted-foreground mt-2 space-y-0.5 text-xs">
           {qr.phase2_problems.map((p, i) => (
             <li key={`p${i}`} className="text-warn">
               • {p}
             </li>
           ))}
-          {qr.phase2_notes.map((n, i) => (
+          {lang === "en" && qr.phase2_notes.map((n, i) => (
             <li key={`n${i}`}>• {n}</li>
           ))}
         </ul>
@@ -136,7 +136,7 @@ function Header() {
   return (
     <h2 className="flex items-center gap-2 text-sm font-semibold">
       <QrCode className="text-muted-foreground size-4" />
-      {t("ZATCA QR — extracted fields", "رمز الاستجابة — الحقول المستخرجة")}
+      {t("ZATCA QR — extracted fields", "رمز الاستجابة السريعة (QR) — الحقول المستخرجة")}
     </h2>
   )
 }

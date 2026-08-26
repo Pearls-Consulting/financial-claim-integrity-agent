@@ -16,12 +16,30 @@ rules:
     severity: fail
     source: { doc: Procurement Law Exec. Regulations, ref: progress payments }
 
+  - id: boq.payment_not_already_disbursed
+    title_en: Payment number was not disbursed before
+    title_ar: رقم الدفعة لم يُصرف مسبقاً
+    check: payment_not_already_disbursed
+    severity: fail
+    # Verbatim rejection reason observed in the client's استلام المطالبات
+    # screen; normative anchor pending POC-P01.
+    source: { doc: Client rejection practice (D365), ref: "رقم الدفعة تم صرفها مسبقاً" }
+
   - id: boq.payment_sequence
     title_en: Payment number follows the prior sequence
     title_ar: رقم الدفعة يتبع تسلسل الدفعات السابقة
     check: payment_sequence
     severity: warn
     source: { doc: contract, ref: payment schedule }
+
+  - id: boq.claim_type_consistent
+    title_en: Claim type agrees with the payment history
+    title_ar: نوع المستخلص متسق مع سجل الدفعات
+    check: claim_type_consistent
+    severity: fail
+    # 'تعديل نوع المستخلص لدوري' is a verbatim rejection reason in the client's
+    # claims screen. The should-be-final case downgrades itself to warn.
+    source: { doc: Client rejection practice (D365), ref: "تعديل نوع المستخلص لدوري" }
 
   - id: boq.final_claim_closes_contract
     title_en: Final claim closes out the contract value

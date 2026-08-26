@@ -6,8 +6,8 @@ const META: Record<Severity | Verdict, { en: string; ar: string; pill: string; d
   ok: { en: "Pass", ar: "مطابق", pill: "border-ok/30 bg-ok/10 text-ok", dot: "bg-ok" },
   warn: { en: "Review", ar: "ملاحظة", pill: "border-warn/30 bg-warn/10 text-warn", dot: "bg-warn" },
   fail: { en: "Fail", ar: "مخالفة", pill: "border-destructive/30 bg-destructive/10 text-destructive", dot: "bg-destructive" },
-  approve: { en: "Recommend approve", ar: "توصية بالقبول", pill: "border-ok/30 bg-ok/10 text-ok", dot: "bg-ok" },
-  needs_human: { en: "Needs human review", ar: "تحتاج مراجعة بشرية", pill: "border-warn/30 bg-warn/10 text-warn", dot: "bg-warn" },
+  approve: { en: "Recommend approve", ar: "توصية بالاعتماد", pill: "border-ok/30 bg-ok/10 text-ok", dot: "bg-ok" },
+  needs_human: { en: "Needs human review", ar: "تتطلب مراجعة المختص", pill: "border-warn/30 bg-warn/10 text-warn", dot: "bg-warn" },
   reject: { en: "Recommend reject", ar: "توصية بالرفض", pill: "border-destructive/30 bg-destructive/10 text-destructive", dot: "bg-destructive" },
 }
 

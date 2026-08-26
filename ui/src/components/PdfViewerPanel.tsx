@@ -14,15 +14,16 @@ import "react-pdf/dist/Page/TextLayer.css"
 import "react-pdf/dist/Page/AnnotationLayer.css"
 
 import { useLang } from "@/lib/i18n"
-import { claimFileUrl } from "@/lib/api"
+import { claimFileUrl, locateInDocument, type LocatePoint } from "@/lib/api"
 import { usePdfViewer, type PdfViewRequest } from "@/components/PdfViewerContext"
 
 /**
  * Embedded document reader with value highlighting, ported from the
  * prequalification agent's PdfViewerPanel (its proven normalization +
- * text-layer matching), minus the Azure-CU polygon fallback — every document
- * in this demo carries a searchable text layer. If scanned documents show up,
- * port the `locateInDocument` server fallback from that project.
+ * text-layer matching), INCLUDING the Azure-CU polygon fallback: when the
+ * text layer can't be matched — scanned contracts, rotated BoQ tables — the
+ * server OCR-locates the value and the viewer draws its word polygons over
+ * the rendered page.
  */
 
 // pdf.js parses/renders off the main thread; Vite bundles the shipped worker.
@@ -257,13 +258,23 @@ function ZoomControls({ onOut, onIn }: { onOut: () => void; onIn: () => void }) 
 function PdfReader({ request }: { request: PdfViewRequest }) {
   const { t, dir } = useLang()
   const [numPages, setNumPages] = React.useState(0)
-  const [pageNum, setPageNum] = React.useState(1)
+  const [pageNum, setPageNum] = React.useState(Math.max(request.page ?? 1, 1))
   const [zoom, setZoom] = React.useState(0.94)
   const [containerW, setContainerW] = React.useState(0)
   const [error, setError] = React.useState<string | null>(null)
   const scrollRef = React.useRef<HTMLDivElement>(null)
   const pdfRef = React.useRef<PdfProxy | null>(null)
   const docSearched = React.useRef(false)
+
+  // Azure CU OCR fallback (polygons drawn over the page) for when the text
+  // layer can't be matched — scanned pages or a corrupt Arabic text layer.
+  const [cuPolys, setCuPolys] = React.useState<LocatePoint[][] | null>(null)
+  const [cuLoading, setCuLoading] = React.useState(false)
+  const [pageDims, setPageDims] = React.useState<{ w: number; h: number } | null>(null)
+  // The page CU actually found the value on (may differ from the cited page);
+  // the overlay only draws while that page is showing.
+  const [cuPage, setCuPage] = React.useState<number | null>(null)
+  const cuTried = React.useRef(false)
 
   // Fit-to-width: track the panel's usable width. The scroll container reserves
   // its scrollbar gutter so clientWidth stays constant (no resize feedback loop).
@@ -285,16 +296,17 @@ function PdfReader({ request }: { request: PdfViewRequest }) {
   const url = claimFileUrl(request.claimId, request.index)
   const file = React.useMemo(() => ({ url }), [url])
 
-  const candidates = React.useMemo(
-    () =>
-      Array.from(
-        new Set(
-          buildRawList(request.highlight, request.highlightAlso)
-            .map((c) => normalize(c))
-            .filter(Boolean)
-        )
-      ),
+  const rawList = React.useMemo(
+    () => buildRawList(request.highlight, request.highlightAlso),
     [request.highlight, request.highlightAlso]
+  )
+  const anchorList = React.useMemo(
+    () => (request.highlightExtra?.trim() ? [request.highlightExtra.trim()] : []),
+    [request.highlightExtra]
+  )
+  const candidates = React.useMemo(
+    () => Array.from(new Set(rawList.map((c) => normalize(c)).filter(Boolean))),
+    [rawList]
   )
   const primaryCandidates = React.useMemo(
     () => Array.from(new Set(rawCandidates(request.highlight ?? "").map((c) => normalize(c)).filter(Boolean))),
@@ -327,14 +339,36 @@ function PdfReader({ request }: { request: PdfViewRequest }) {
     [candidates]
   )
 
-  // After the text layer lays out: scroll the hit into view, or search the
-  // rest of the document for the value's page and jump there.
+  // Server OCR-locate: ask CU for the value's polygons, jumping to the page it
+  // was actually found on. The anchors (verbatim clause) go along as the weak
+  // fallback. One shot per open — repeated failures would just re-bill OCR.
+  const runCuFallback = React.useCallback(() => {
+    if (cuTried.current || (!rawList.length && !anchorList.length)) return
+    cuTried.current = true
+    const target = pageNum
+    setCuPage(target)
+    setCuLoading(true)
+    locateInDocument(request.claimId, request.index, target, rawList, anchorList)
+      .then((r) => {
+        if (r.found && r.page && r.page !== target) {
+          setCuPage(r.page)
+          setPageNum(r.page)
+        }
+        setCuPolys(r.found ? r.polygons : [])
+      })
+      .finally(() => setCuLoading(false))
+  }, [rawList, anchorList, pageNum, request.claimId, request.index])
+
+  // After the text layer lays out: scroll the hit into view; else search the
+  // rest of the document for the value's page and jump there; else fall back
+  // to server OCR-locate (scanned pages have an empty text layer).
   const onTextLayer = React.useCallback(() => {
     const hit = scrollRef.current?.querySelector(".cia-pdf-hit")
     if (hit) {
       hit.scrollIntoView({ block: "center", behavior: "smooth" })
       return
     }
+    if (!candidates.length && !anchorList.length) return
     if (candidates.length && !docSearched.current && pdfRef.current) {
       docSearched.current = true
       const doc = pdfRef.current
@@ -346,9 +380,21 @@ function PdfReader({ request }: { request: PdfViewRequest }) {
       }
       findPreferValue().then((found) => {
         if (found) setPageNum(found) // re-render → textRenderer highlights there
+        else runCuFallback()
       })
+      return
     }
-  }, [candidates, primaryCandidates, pageNum])
+    runCuFallback()
+  }, [candidates, anchorList, primaryCandidates, pageNum, runCuFallback])
+
+  // Bring the CU highlight into view once it arrives.
+  React.useEffect(() => {
+    if (cuPolys && cuPolys.length) {
+      scrollRef.current
+        ?.querySelector(".cia-cu-hit")
+        ?.scrollIntoView({ block: "center", behavior: "smooth" })
+    }
+  }, [cuPolys])
 
   const pdfTools = (
     <>
@@ -411,21 +457,48 @@ function PdfReader({ request }: { request: PdfViewRequest }) {
           }
           className="flex justify-center"
         >
-          <Page
-            pageNumber={pageNum}
-            width={pageWidth}
-            scale={pageWidth ? undefined : 1}
-            renderAnnotationLayer={false}
-            customTextRenderer={textRenderer}
-            onRenderTextLayerSuccess={onTextLayer}
-            loading={
-              <Centered>
-                <Loader2 className="text-muted-foreground size-5 animate-spin" />
-              </Centered>
-            }
-            className="shadow-sm"
-          />
+          <div className="relative">
+            <Page
+              pageNumber={pageNum}
+              width={pageWidth}
+              scale={pageWidth ? undefined : 1}
+              renderAnnotationLayer={false}
+              customTextRenderer={textRenderer}
+              onRenderTextLayerSuccess={onTextLayer}
+              onRenderSuccess={(p) => setPageDims({ w: p.width, h: p.height })}
+              loading={
+                <Centered>
+                  <Loader2 className="text-muted-foreground size-5 animate-spin" />
+                </Centered>
+              }
+              className="shadow-sm"
+            />
+            {pageNum === cuPage && pageDims && cuPolys && cuPolys.length > 0 && (
+              <svg
+                className="pointer-events-none absolute left-0 top-0"
+                width={pageDims.w}
+                height={pageDims.h}
+              >
+                {cuPolys.map((poly, i) => (
+                  <polygon
+                    key={i}
+                    className={i === 0 ? "cia-cu-hit" : undefined}
+                    points={poly.map((pt) => `${pt.x * pageDims.w},${pt.y * pageDims.h}`).join(" ")}
+                    fill="rgba(250,204,21,0.35)"
+                    stroke="rgba(202,138,4,0.85)"
+                    strokeWidth={1}
+                  />
+                ))}
+              </svg>
+            )}
+          </div>
         </Document>
+        {cuLoading && (
+          <div className="bg-card border-border text-muted-foreground sticky bottom-2 mx-auto flex w-fit items-center gap-2 rounded-full border px-3 py-1 text-xs shadow-sm">
+            <Loader2 className="size-3.5 animate-spin" />
+            {t("Locating in document…", "جارٍ تحديد الموضع في المستند…")}
+          </div>
+        )}
       </div>
     </aside>
   )
@@ -434,6 +507,23 @@ function PdfReader({ request }: { request: PdfViewRequest }) {
 function ImageReader({ request }: { request: PdfViewRequest }) {
   const { t, dir } = useLang()
   const [scale, setScale] = React.useState(1)
+  // Images have no text layer — go straight to the server OCR-locate.
+  const [cuPolys, setCuPolys] = React.useState<LocatePoint[][] | null>(null)
+  const [cuLoading, setCuLoading] = React.useState(false)
+  const cuTried = React.useRef(false)
+
+  React.useEffect(() => {
+    if (cuTried.current) return
+    const rawList = buildRawList(request.highlight, request.highlightAlso)
+    const anchors = request.highlightExtra?.trim() ? [request.highlightExtra.trim()] : []
+    if (!rawList.length && !anchors.length) return
+    cuTried.current = true
+    setCuLoading(true)
+    locateInDocument(request.claimId, request.index, 1, rawList, anchors)
+      .then((r) => setCuPolys(r.found ? r.polygons : []))
+      .finally(() => setCuLoading(false))
+  }, [request])
+
   return (
     <aside dir={dir} className={PANEL_CLASS}>
       <ViewerHeader
@@ -446,12 +536,36 @@ function ImageReader({ request }: { request: PdfViewRequest }) {
         }
       />
       <div className="bg-muted/30 relative min-h-0 flex-1 overflow-auto p-3">
-        <img
-          src={claimFileUrl(request.claimId, request.index)}
-          alt={request.fileName ?? t("Document", "المستند")}
-          className="mx-auto block h-auto shadow-sm"
-          style={{ width: `${Math.round(scale * 100)}%` }}
-        />
+        <div className="relative mx-auto" style={{ width: `${Math.round(scale * 100)}%` }}>
+          <img
+            src={claimFileUrl(request.claimId, request.index)}
+            alt={request.fileName ?? t("Document", "المستند")}
+            className="block h-auto w-full shadow-sm"
+          />
+          {cuPolys && cuPolys.length > 0 && (
+            <svg
+              className="pointer-events-none absolute left-0 top-0 h-full w-full"
+              viewBox="0 0 1 1"
+              preserveAspectRatio="none"
+            >
+              {cuPolys.map((poly, i) => (
+                <polygon
+                  key={i}
+                  points={poly.map((pt) => `${pt.x},${pt.y}`).join(" ")}
+                  fill="rgba(250,204,21,0.35)"
+                  stroke="rgba(202,138,4,0.85)"
+                  strokeWidth={0.002}
+                />
+              ))}
+            </svg>
+          )}
+        </div>
+        {cuLoading && (
+          <div className="bg-card border-border text-muted-foreground sticky bottom-2 mx-auto flex w-fit items-center gap-2 rounded-full border px-3 py-1 text-xs shadow-sm">
+            <Loader2 className="size-3.5 animate-spin" />
+            {t("Locating in document…", "جارٍ تحديد الموضع في المستند…")}
+          </div>
+        )}
       </div>
     </aside>
   )

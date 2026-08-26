@@ -19,7 +19,7 @@
   --font-arabic: "IBM Plex Sans Arabic", "IBM Plex Sans", sans-serif;
 
   /* SDB brand (deploy/sdb config of the prequalification agent) */
-  --color-background: oklch(0.972 0.002 248); /* light neutral canvas */
+  --color-background: oklch(100% 0.00011 271.152); /* white canvas — matches the prequal home */
   --color-foreground: oklch(0.27 0.012 245); /* slate ink */
   --color-muted: oklch(0.952 0.0025 248);
   --color-muted-foreground: oklch(0.52 0.014 245);
@@ -35,6 +35,7 @@
 
   --color-ok: #00874b; /* SDB green */
   --color-warn: oklch(0.62 0.13 70); /* amber — needs a human look */
+  --color-gold: oklch(0.5354 0.0751 78.66); /* #856838 — hero accent (matches prequal) */
 }
 
 body {

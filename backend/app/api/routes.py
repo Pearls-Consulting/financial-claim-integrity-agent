@@ -1,13 +1,17 @@
+import io
 import json
 import mimetypes
 import uuid
+import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from app.core.config import get_settings
-from app.domain.models import Claim, ClaimType, InvoiceDoc, Penalty, RunResult, Verdict
+from pydantic import BaseModel
+
+from app.domain.models import BoqLine, Claim, ClaimType, ContractDoc, ContractKind, DetectedAttachment, InvoiceDoc, Penalty, RunResult, Verdict
 from app.services import store
 from app.domain.stages import STAGES, Stage
 from app.services import pipeline, submissions
@@ -40,7 +44,8 @@ def list_stages() -> list[Stage]:
 @router.get("/claims", response_model=list[Claim])
 def list_claims() -> list[Claim]:
     steps, verdicts = store.progress_map(), store.verdict_map()
-    return [_annotate(c, steps, verdicts) for c in get_source().list_claims() + submissions.list_claims()]
+    # newest submissions first, then the static ERP claims
+    return [_annotate(c, steps, verdicts) for c in submissions.list_claims()[::-1] + get_source().list_claims()]
 
 
 @router.get("/claims/{claim_id}", response_model=Claim)
@@ -83,6 +88,60 @@ def latest_run(claim_id: str) -> RunResult | None:
     return pipeline.latest_run(claim_id)
 
 
+# Documents the matching gates read, in pack order. Pre-finance attachments
+# (CR, GOSI, Zakat, bank letter...) are compliance proofs, not matching inputs,
+# and stay out of the export.
+_EXPORT_DOC_TYPES = ("invoice", "contract_boq", "coc", "delivery_note")
+_EXPORT_LABELS = {"invoice": "Invoice", "coc": "COC", "delivery_note": "DeliveryNote"}
+
+
+def export_entries(claim: Claim) -> list[tuple[str, Path]]:
+    """(name in zip, path on disk) for every matching document.
+
+    Claim-bound documents (invoice, acceptance) are prefixed with the claim id
+    so the pack stays traceable once unzipped; the contract/BoQ is a contract
+    document shared across claims and keeps its own file name.
+    """
+    entries: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for doc_type in _EXPORT_DOC_TYPES:
+        for f in claim.source_files:
+            if f.doc_type != doc_type:
+                continue
+            path = (PROJECT_ROOT / f.path).resolve()
+            if not path.is_relative_to(PROJECT_ROOT) or not path.is_file():
+                continue
+            name = path.name if doc_type == "contract_boq" else f"{claim.id}_{_EXPORT_LABELS[doc_type]}_{path.name}"
+            if name in seen:  # two files with the same name — keep both
+                name = f"{path.stem}_{len(seen)}{path.suffix}"
+            seen.add(name)
+            entries.append((name, path))
+    return entries
+
+
+@router.get("/claims/{claim_id}/export")
+def export_claim(claim_id: str) -> StreamingResponse:
+    """Zip of the documents that took part in the matching, for hand-off to
+    finance / audit: invoice, contract/BoQ, acceptance document."""
+    claim = _find_claim(claim_id)
+    if claim is None:
+        raise HTTPException(status_code=404, detail=f"Unknown claim {claim_id}")
+    entries = export_entries(claim)
+    if not entries:
+        raise HTTPException(status_code=404, detail=f"Claim {claim_id} has no matching documents staged")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, path in entries:
+            zf.write(path, arcname=name)
+    buf.seek(0)
+    filename = f"{claim.id}_matching_documents.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/claims/{claim_id}/files/{index}")
 def claim_file(claim_id: str, index: int) -> FileResponse:
     """Stream one of the claim's staged source files inline (for the viewer)."""
@@ -101,6 +160,42 @@ def claim_file(claim_id: str, index: int) -> FileResponse:
         content_disposition_type="inline",
         filename=path.name,
     )
+
+
+class LocateRequest(BaseModel):
+    page: int = 1
+    values: list[str]  # candidate renderings of the same value, tried in order
+    anchors: list[str] = []  # weak fallback — the verbatim clause / excerpt
+
+
+class LocateResponse(BaseModel):
+    found: bool
+    polygons: list[list[dict[str, float]]]  # [[{x,y} × 4], …], x,y ∈ [0,1]
+    page: int | None = None  # where it was ACTUALLY found
+
+
+@router.post("/claims/{claim_id}/files/{index}/locate", response_model=LocateResponse)
+def locate_in_file(claim_id: str, index: int, req: LocateRequest) -> LocateResponse:
+    """OCR-locate a value on a staged document page — the viewer's fallback
+    when the PDF text layer can't be matched (scanned contracts). Returns
+    word polygons as page fractions; cached per (content, page) forever."""
+    claim = _find_claim(claim_id)
+    if claim is None:
+        raise HTTPException(status_code=404, detail=f"Unknown claim {claim_id}")
+    if index < 0 or index >= len(claim.source_files):
+        raise HTTPException(status_code=404, detail=f"Claim {claim_id} has no file #{index}")
+    path = (PROJECT_ROOT / claim.source_files[index].path).resolve()
+    if not path.is_relative_to(PROJECT_ROOT) or not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    if get_settings().extractor_engine != "azure":
+        return LocateResponse(found=False, polygons=[])
+    from app.services.extraction.locate import locate_value_in_document
+
+    try:
+        result = locate_value_in_document(path, max(req.page, 1), req.values, anchors=req.anchors)
+    except Exception:
+        return LocateResponse(found=False, polygons=[])
+    return LocateResponse(**result)
 
 
 @router.post("/extract/invoice", response_model=InvoiceDoc | None)
@@ -125,6 +220,63 @@ def extract_invoice(invoice: UploadFile = File(...)) -> InvoiceDoc | None:
     return docs.invoice
 
 
+class ContractExtract(BaseModel):
+    """What one contract/BoQ read yields for the step-2 suggestions."""
+
+    boq: list[BoqLine] = []
+    contract: ContractDoc | None = None
+
+
+@router.post("/extract/boq", response_model=ContractExtract | None)
+def extract_boq(contract_boq: UploadFile = File(...)) -> ContractExtract | None:
+    """Read one contract/BoQ on its own — powers the step-2 suggestions
+    (contract value from summed line totals, contract end date from the
+    header), reviewer-confirmed, never silently trusted.
+
+    Null means "no reader available" (mock engine).
+    """
+    if get_settings().extractor_engine != "azure":
+        return None
+    from app.services.extraction.cu_client import analyze_layout
+    from app.services.extraction.structuring import structure_documents
+
+    staged = submissions.stage_file(f"_prefill/{uuid.uuid4().hex[:8]}", contract_boq, "contract_boq")
+    path = PROJECT_ROOT / staged.path
+    result = analyze_layout(path)
+    if not result.ok:
+        raise HTTPException(status_code=422, detail=f"OCR failed: {result.error}")
+    docs = structure_documents([(path.name, "contract_boq", result.markdown)])
+    return ContractExtract(boq=docs.boq, contract=docs.contract)
+
+
+@router.post("/extract/attachments", response_model=list[DetectedAttachment])
+def extract_attachments(files: list[UploadFile] = File(...)) -> list[DetectedAttachment]:
+    """Identify the uploaded vendor-file documents for the pre-finance gate —
+    which is the CR, the zakat certificate, the award letter... — and lift
+    their printed identity fields (CR number, VAT number, reference no.).
+
+    Azure engine: CU OCR (disk-cached) + one GPT classification call, with a
+    filename heuristic as the safety net. Mock engine: heuristic only, no
+    fields — the demo flow still works, just without extracted values.
+    """
+    from app.services.extraction.attachments import classify_attachments, heuristic_doc_key
+
+    if get_settings().extractor_engine != "azure":
+        return [
+            DetectedAttachment(file_name=f.filename or "file", doc_key=heuristic_doc_key(f.filename or ""))
+            for f in files
+        ]
+    from app.services.extraction.cu_client import analyze_layout
+
+    batch = f"_prefill/{uuid.uuid4().hex[:8]}"
+    markdown_by_file: list[tuple[str, str]] = []
+    for upload in files:
+        staged = submissions.stage_file(batch, upload, "attachment")
+        result = analyze_layout(PROJECT_ROOT / staged.path)
+        markdown_by_file.append((upload.filename or Path(staged.path).name, result.markdown if result.ok else ""))
+    return classify_attachments(markdown_by_file)
+
+
 @router.post("/submissions", response_model=Claim)
 def create_submission(
     # Header fields mirroring the D365 استلام المطالبات overview form.
@@ -136,6 +288,8 @@ def create_submission(
     vendor_name_ar: str = Form(""),
     vendor_name_en: str = Form(""),
     contract_value: float = Form(0.0),
+    contract_kind: ContractKind = Form(ContractKind.works),
+    contract_end_date: str = Form(""),
     claim_amount_base: float = Form(0.0),
     vat_amount: float = Form(0.0),
     claim_amount_total: float = Form(0.0),
@@ -187,6 +341,8 @@ def create_submission(
         vendor_name_ar=vendor_name_ar,
         vendor_name_en=vendor_name_en,
         contract_value=contract_value,
+        contract_kind=contract_kind,
+        contract_end_date=contract_end_date,
         claim_amount_base=claim_amount_base,
         vat_amount=vat_amount,
         claim_amount_total=claim_amount_total,
@@ -217,6 +373,8 @@ def update_submission(
     vendor_name_ar: str | None = Form(None),
     vendor_name_en: str | None = Form(None),
     contract_value: float | None = Form(None),
+    contract_kind: ContractKind | None = Form(None),
+    contract_end_date: str | None = Form(None),
     claim_amount_base: float | None = Form(None),
     vat_amount: float | None = Form(None),
     claim_amount_total: float | None = Form(None),
@@ -228,7 +386,12 @@ def update_submission(
     prior_payment_count: int | None = Form(None),
     penalties: str | None = Form(None),
     attachments: str | None = Form(None),
+    # Vendor-file documents for the pre-finance gate: the files plus the
+    # detections returned by /extract/attachments (aligned by file name).
+    detected_attachments: str | None = Form(None),
+    attachment_docs: list[UploadFile] = File(default=[]),
     # Documents attached at their gate's step; re-uploading replaces the slot.
+    invoice: UploadFile | None = File(None),
     contract_boq: UploadFile | None = File(None),
     coc: UploadFile | None = File(None),
     delivery_note: UploadFile | None = File(None),
@@ -242,19 +405,31 @@ def update_submission(
     if claim is None:
         raise HTTPException(status_code=404, detail=f"Unknown submission {claim_id}")
 
-    for upload, doc_type in ((contract_boq, "contract_boq"), (coc, "coc"), (delivery_note, "delivery_note")):
+    # One file per slot: a re-upload REPLACES the previous document (record and
+    # staged file) so the next run re-reads only the new one. The acceptance
+    # document is one slot too — a delivery note supersedes a COC and vice
+    # versa, since the contract kind decides which the gate should read.
+    slots = (
+        (invoice, "invoice", ("invoice",)),
+        (contract_boq, "contract_boq", ("contract_boq",)),
+        (coc, "coc", ("coc", "delivery_note")),
+        (delivery_note, "delivery_note", ("coc", "delivery_note")),
+    )
+    for upload, doc_type, replaces in slots:
         if upload is not None and upload.filename:
-            staged = submissions.stage_file(claim_id, upload, doc_type)
-            claim.source_files = [f for f in claim.source_files if f.doc_type != doc_type] + [staged]
-    claim.source_files += [
-        submissions.stage_file(claim_id, upload, "other") for upload in other if upload.filename
-    ]
+            submissions.drop_files(claim, lambda f, r=replaces: f.doc_type in r)
+            claim.source_files.append(submissions.stage_file(claim_id, upload, doc_type))
+    real_other = [u for u in other if u.filename]
+    if real_other:
+        submissions.drop_files(claim, lambda f: f.doc_type == "other")
+        claim.source_files += [submissions.stage_file(claim_id, upload, "other") for upload in real_other]
 
     updates = {
         "po_no": po_no, "project_no": project_no, "project_name_ar": project_name_ar,
         "project_name_en": project_name_en, "vendor_account": vendor_account,
         "vendor_name_ar": vendor_name_ar, "vendor_name_en": vendor_name_en,
-        "contract_value": contract_value, "claim_amount_base": claim_amount_base,
+        "contract_value": contract_value, "contract_kind": contract_kind,
+        "contract_end_date": contract_end_date, "claim_amount_base": claim_amount_base,
         "vat_amount": vat_amount, "claim_amount_total": claim_amount_total,
         "invoice_no": invoice_no, "payment_no": payment_no, "claim_type": claim_type,
         "claim_date": claim_date, "cumulative_prior": cumulative_prior,
@@ -270,6 +445,37 @@ def update_submission(
             claim.documents.attachments = [str(a) for a in json.loads(attachments)]
     except (json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"Bad penalties/attachments payload: {exc}") from exc
+
+    # Vendor-file documents: stage each upload under its detected type and
+    # derive the ERP attachment list from the detections — the completeness
+    # gate then validates what the agent actually SAW, not a checkbox.
+    real_docs = [u for u in attachment_docs if u.filename]
+    if real_docs:
+        from app.services.extraction.attachments import heuristic_doc_key
+
+        try:
+            detected = (
+                [DetectedAttachment.model_validate(d) for d in json.loads(detected_attachments)]
+                if detected_attachments
+                else []
+            )
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"Bad detected_attachments payload: {exc}") from exc
+        by_name = {d.file_name: d for d in detected}
+
+        submissions.drop_files(claim, lambda f: f.doc_type.startswith("attachment"))
+        final: list[DetectedAttachment] = []
+        for upload in real_docs:
+            det = by_name.get(upload.filename or "") or DetectedAttachment(
+                file_name=upload.filename or "file", doc_key=heuristic_doc_key(upload.filename or "")
+            )
+            claim.source_files.append(submissions.stage_file(claim_id, upload, f"attachment:{det.doc_key}"))
+            final.append(det)
+        claim.documents.detected_attachments = final
+        keys = {d.doc_key for d in final if d.doc_key != "other"}
+        if any(f.doc_type == "contract_boq" for f in claim.source_files):
+            keys |= {"contract", "boq"}  # the combined step-2 document covers both
+        claim.documents.attachments = sorted(keys)
 
     submissions.add(claim)
     return claim

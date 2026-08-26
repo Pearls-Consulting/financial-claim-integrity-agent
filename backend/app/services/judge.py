@@ -10,10 +10,18 @@ demo, and the honest baseline the LLM judge must beat.
 
 from __future__ import annotations
 
+import hashlib
+import json
+from pathlib import Path
 from typing import Protocol
 
 from app.core.config import get_settings
 from app.domain.models import Claim, GateRun, RunResult, Severity, Verdict
+
+# Identical findings -> identical write-up: rationales are cached on disk keyed
+# by (prompt, model, payload), so a re-scan of the same documents skips the
+# model. claim_id is deliberately NOT part of the payload/key.
+_CACHE_DIR = Path(__file__).resolve().parents[2] / ".cache" / "judge"
 
 
 class Judge(Protocol):
@@ -55,8 +63,6 @@ class GptJudge:
     """
 
     def judge(self, claim: Claim, gates: list[GateRun]) -> RunResult:
-        import json
-
         from openai import OpenAI
 
         from app.core.config import get_settings as _s
@@ -85,20 +91,32 @@ class GptJudge:
             "not a literal translation."
         )
         payload = {
-            "claim_id": claim.id,
             "claim_type": claim.claim_type.value,
             "payment_no": claim.payment_no,
             "verdict_floor": baseline.verdict.value,
             "findings": findings,
         }
         settings = _s()
+
+        payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        digest = hashlib.sha256(f"{system}\x00{settings.azure_openai_model}\x00{payload_json}".encode()).hexdigest()
+        cache_file = _CACHE_DIR / f"{digest}.json"
+        if cache_file.exists():
+            try:
+                cached = json.loads(cache_file.read_text(encoding="utf-8"))
+                baseline.rationale_en = str(cached.get("rationale_en") or baseline.rationale_en)
+                baseline.rationale_ar = str(cached.get("rationale_ar") or baseline.rationale_ar)
+                return baseline
+            except Exception:
+                pass  # corrupt cache — fall through and re-ask the model
+
         client = OpenAI(api_key=settings.azure_openai_api_key, base_url=settings.azure_openai_base_url)
         try:
             response = client.chat.completions.create(
                 model=settings.azure_openai_model,
                 messages=[
                     {"role": "system", "content": system},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                    {"role": "user", "content": payload_json},
                 ],
             )
             raw = (response.choices[0].message.content or "").strip()
@@ -106,6 +124,17 @@ class GptJudge:
             data = json.loads(raw[start : end + 1])
             baseline.rationale_en = str(data.get("rationale_en") or baseline.rationale_en)
             baseline.rationale_ar = str(data.get("rationale_ar") or baseline.rationale_ar)
+            try:
+                _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                cache_file.write_text(
+                    json.dumps(
+                        {"rationale_en": baseline.rationale_en, "rationale_ar": baseline.rationale_ar},
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
         except Exception:
             # The judge is presentation-layer: on any model failure the
             # deterministic baseline rationale ships unchanged.

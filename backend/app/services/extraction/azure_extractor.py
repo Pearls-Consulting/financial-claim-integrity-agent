@@ -27,7 +27,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 class AzureCuExtractor:
     def extract(self, claim: Claim) -> ClaimDocuments:
-        files = [(f, PROJECT_ROOT / f.path) for f in claim.source_files]
+        # Pre-finance attachment files are classified at upload time
+        # (extraction/attachments.py) — re-OCR'ing them here would only slow
+        # the run and pollute the claim-structuring corpus.
+        files = [
+            (f, PROJECT_ROOT / f.path)
+            for f in claim.source_files
+            if not f.doc_type.startswith("attachment")
+        ]
         missing = [str(p) for _, p in files if not p.exists()]
         if missing:
             raise FileNotFoundError(f"claim {claim.id}: staged files not found: {missing}")
@@ -63,11 +70,16 @@ class AzureCuExtractor:
             extracted.invoice = seeded.invoice
         if extracted.coc is None:
             extracted.coc = seeded.coc
-        # The product receipt is ERP-owned (posted in D365, not a scanned doc).
-        if extracted.receipt is None:
+        # The product receipt is ERP-owned: when the ERP has one it is the
+        # authority and always wins; a receipt read from an uploaded delivery
+        # note only fills in when no ERP record exists (wizard submissions).
+        if seeded.receipt is not None:
             extracted.receipt = seeded.receipt
         if not extracted.boq:
             extracted.boq = seeded.boq
+        if extracted.contract is None:
+            extracted.contract = seeded.contract
         extracted.penalties = seeded.penalties
         extracted.attachments = seeded.attachments
+        extracted.detected_attachments = seeded.detected_attachments
         return extracted

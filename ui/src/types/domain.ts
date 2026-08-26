@@ -1,4 +1,6 @@
-export type ClaimType = "periodic" | "final"
+export type ClaimType = "periodic" | "first" | "final"
+/** Decides the acceptance document: goods -> goods receipt, works -> COC. */
+export type ContractKind = "goods" | "works"
 export type Severity = "ok" | "warn" | "fail"
 export type Verdict = "approve" | "reject" | "needs_human"
 
@@ -25,7 +27,9 @@ export interface Claim {
   vendor_account: string
   vendor_name_ar: string
   vendor_name_en: string
-  contract_value: number
+  contract_value: number // base, excl. VAT — same basis as BoQ line prices
+  contract_kind: ContractKind
+  contract_end_date: string // contractual completion / delivery date
   claim_amount_base: number
   vat_amount: number
   claim_amount_total: number
@@ -33,7 +37,7 @@ export interface Claim {
   payment_no: number
   claim_type: ClaimType
   claim_date: string
-  cumulative_prior: number
+  cumulative_prior: number // disbursed before this claim (base, excl. VAT)
   prior_payment_count: number
   status_ar: string
   source_files: ClaimFile[]
@@ -96,10 +100,47 @@ export interface ReceiptDoc {
   lines: ReceiptLine[]
 }
 
+/** One penalty clause as PRINTED in the contract — the contract's TERMS, not
+ *  the ERP record of penalties imposed. text_ar/page anchor the evidence
+ *  viewer on the clause. */
+export interface PenaltyTerm {
+  kind: string // delay | other
+  rate_percent: number
+  per: string // day | week | "" (flat / cap-style)
+  basis: string
+  cap_percent: number
+  text_ar: string
+  ref: string
+  page: number // 1-based page of the contract document; 0 = unknown
+}
+
+/** Contract/PO header as extracted from the contract document. */
+export interface ContractDoc {
+  contract_no: string
+  start_date: string
+  end_date: string
+  value_base: number
+  penalty_terms: PenaltyTerm[]
+}
+
+/** What one contract/BoQ read yields for the step-2 suggestions. */
+export interface ContractExtract {
+  boq: BoqLine[]
+  contract: ContractDoc | null
+}
+
 export interface Penalty {
   reason_ar: string
   amount: number
   date: string
+}
+
+/** One vendor-file document as identified by the agent at the pre-finance
+ *  gate, with the identity fields it printed (CR number, VAT number, ...). */
+export interface DetectedAttachment {
+  file_name: string
+  doc_key: string // a required-attachment key, or "other"
+  fields: Record<string, string>
 }
 
 export interface ClaimDocuments {
@@ -107,8 +148,10 @@ export interface ClaimDocuments {
   coc: CocDoc | null
   receipt: ReceiptDoc | null
   boq: BoqLine[]
+  contract: ContractDoc | null
   penalties: Penalty[]
   attachments: string[]
+  detected_attachments: DetectedAttachment[]
 }
 
 export interface QrField {

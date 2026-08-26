@@ -1,15 +1,23 @@
-# Gate 4 — three-way match: contract/BoQ ↔ ERP product receipt ↔ invoice.
-# The procedure posts the receipt (SPM-PM01 §9.3 step 5, إيصال استلام
-# المنتجات) but states no comparison criterion; the criterion comes from the
-# procurement law (pay only for executed/received work) and the contract's
-# BoQ quantities.
+# Gate 3 — acceptance & three-way match: contract/BoQ ↔ acceptance document
+# ↔ invoice. One acceptance document per contract kind (goods receipt for
+# goods, محضر الإنجاز for works); the ERP product receipt the procedure posts
+# (SPM-PM01 §9.3 step 5) is a cross-check when it exists, never a second
+# acceptance. The comparison criterion comes from the procurement law (pay
+# only for executed/received work) and the contract's BoQ.
 rules:
-  - id: three_way.receipt_present
-    title_en: ERP product receipt is posted for the claim
-    title_ar: إيصال استلام المنتجات مسجل في النظام
-    check: receipt_present
+  - id: three_way.acceptance_present
+    title_en: Acceptance document present for the contract kind
+    title_ar: وجود مستند الاستلام المناسب لنوع العقد
+    check: acceptance_present
     severity: warn
-    source: { doc: SPM-PM01, ref: "§9.3 step 5 — إيصال استلام المنتجات" }
+    source: { doc: SPM-PM01, ref: "§9.3 step 5 — الاستلام" }
+
+  - id: three_way.coc_amount_matches_claim
+    title_en: COC amount matches the claim total
+    title_ar: مبلغ محضر الإنجاز يطابق إجمالي المطالبة
+    check: coc_amount_matches_claim
+    severity: fail
+    source: { doc: SP-01-04-05-02, ref: steps 3-4 }
 
   - id: three_way.billed_vs_received
     title_en: Quantities billed do not exceed quantities received

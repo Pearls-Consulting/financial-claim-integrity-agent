@@ -16,7 +16,19 @@ from pydantic import BaseModel, Field
 
 class ClaimType(str, Enum):
     periodic = "periodic"  # مستخلص دوري / جاري
+    first = "first"  # دفعة أولى
     final = "final"  # مستخلص نهائي / دفعة نهائية
+
+
+class ContractKind(str, Enum):
+    """Decides which document evidences acceptance — the middle of the
+    three-way match. Goods: the goods/product receipt. Works/projects: the
+    Certificate of Completion (محضر الإنجاز). One acceptance document per
+    contract kind; the ERP receipt posting is a cross-check, never a second
+    acceptance."""
+
+    goods = "goods"  # توريد
+    works = "works"  # مشروع / أعمال / مخرجات
 
 
 class Severity(str, Enum):
@@ -102,6 +114,34 @@ class ReceiptDoc(BaseModel):
     lines: list[ReceiptLine] = Field(default_factory=list)
 
 
+class PenaltyTerm(BaseModel):
+    """One penalty clause as PRINTED in the contract — extracted, never invented.
+
+    Distinct from ``Penalty`` (the ERP record of penalties actually imposed):
+    these are the contract's TERMS, the yardstick the final check measures the
+    penalty record against. ``text_ar`` keeps the verbatim clause fragment so
+    the UI can locate the evidence on the contract page."""
+
+    kind: str = "delay"  # delay | other
+    rate_percent: float = 0.0  # printed rate, e.g. 10.0 for "(10%)"
+    per: str = ""  # day | week | "" (flat / cap-style, no time unit printed)
+    basis: str = ""  # what the percentage applies to, as printed
+    cap_percent: float = 0.0  # overall ceiling; 0 = none printed
+    text_ar: str = ""  # verbatim clause fragment (evidence anchor)
+    ref: str = ""  # article / clause number as printed, e.g. "٣.٣.١"
+    page: int = 0  # 1-based page of the contract document; 0 = unknown
+
+
+class ContractDoc(BaseModel):
+    """Contract header as extracted from the contract / PO document."""
+
+    contract_no: str = ""
+    start_date: str = ""
+    end_date: str = ""  # contractual completion / delivery date
+    value_base: float = 0.0
+    penalty_terms: list[PenaltyTerm] = Field(default_factory=list)
+
+
 class Penalty(BaseModel):
     reason_ar: str
     amount: float
@@ -119,13 +159,28 @@ class ClaimFile(BaseModel):
     doc_type: str = "other"
 
 
+class DetectedAttachment(BaseModel):
+    """One vendor-file / government document as identified at the pre-finance
+    gate: GPT classifies the OCR text and lifts the identity fields (CR
+    number, VAT number, reference no., dates); a filename heuristic backs it
+    up so an upload never goes silently unclassified."""
+
+    file_name: str
+    doc_key: str  # a prefinance required-attachment key, or "other"
+    fields: dict[str, str] = Field(default_factory=dict)  # cr_number, vat_number, ...
+
+
 class ClaimDocuments(BaseModel):
     invoice: InvoiceDoc | None = None
     coc: CocDoc | None = None
     receipt: ReceiptDoc | None = None  # ERP-owned; None = not posted / not pulled
     boq: list[BoqLine] = Field(default_factory=list)
+    contract: ContractDoc | None = None  # header of the contract/PO document
     penalties: list[Penalty] = Field(default_factory=list)
     attachments: list[str] = Field(default_factory=list)  # names as filed in ERP
+    # Filled by the guided intake when the reviewer uploads the vendor-file
+    # documents; ERP-sourced claims carry only the `attachments` name list.
+    detected_attachments: list[DetectedAttachment] = Field(default_factory=list)
 
 
 class Claim(BaseModel):
@@ -139,7 +194,9 @@ class Claim(BaseModel):
     vendor_account: str = ""
     vendor_name_ar: str = ""
     vendor_name_en: str = ""
-    contract_value: float = 0.0
+    contract_value: float = 0.0  # base, excl. VAT — same basis as BoQ line prices
+    contract_kind: ContractKind = ContractKind.works  # goods -> receipt, works -> COC
+    contract_end_date: str = ""  # contractual completion/delivery date (header; falls back to the contract doc)
     claim_amount_base: float = 0.0
     vat_amount: float = 0.0
     claim_amount_total: float = 0.0  # شامل الضريبة
@@ -147,7 +204,7 @@ class Claim(BaseModel):
     payment_no: int = 0  # رقم الدفعة
     claim_type: ClaimType = ClaimType.periodic  # نوع المستخلص
     claim_date: str = ""
-    cumulative_prior: float = 0.0  # total disbursed on this contract before this claim
+    cumulative_prior: float = 0.0  # disbursed on this contract before this claim (base, excl. VAT)
     prior_payment_count: int = 0
     status_ar: str = "تحت الاجراء"
     source_files: list[ClaimFile] = Field(default_factory=list)

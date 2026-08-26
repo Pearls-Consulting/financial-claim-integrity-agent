@@ -1,0 +1,21 @@
+# /etc/systemd/system/claimint.service
+# Claim integrity agent (SDB three-way matching) — single instance.
+# Installed once by deploy/ops/setup_server.sh; releases flip a symlink and
+# `systemctl restart claimint`.
+[Unit]
+Description=Claim integrity agent (SDB three-way matching)
+After=network.target
+
+[Service]
+User=forge
+EnvironmentFile=/srv/claimint/.env
+WorkingDirectory=/srv/claimint/app/current/backend
+ExecStart=/srv/claimint/app/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9201
+Restart=always
+RestartSec=3
+# 3.8G box shared with the prequal fleet — cap transient spikes (PDF
+# rasterization for QR decode) before the kernel OOM-killer picks a victim.
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,33 @@
+# /etc/nginx/sites-available/claimint-sdb
+# Claim integrity agent — SDB. Same shape as the prequal tenant vhosts:
+# nginx serves the built UI, proxies /api/ and /health to uvicorn on 9201.
+# Certbot rewrites this file when the certificate is issued (--nginx).
+server {
+    listen 80;
+    server_name sdb-twm.vrm-poc.pearls.consulting;
+
+    root /srv/claimint/app/current/ui/dist;
+    index index.html;
+
+    # Claim document uploads (invoice / BoQ / CR / award letter PDFs).
+    client_max_body_size 200m;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:9201;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # AI extraction runs hold the request open for minutes.
+        proxy_read_timeout 1800s;
+        proxy_send_timeout 1800s;
+        # Stream uploads through instead of buffering the full body to disk first.
+        proxy_request_buffering off;
+    }
+    location = /health {
+        proxy_pass http://127.0.0.1:9201;
+    }
+    location / {
+        try_files $uri /index.html;
+    }
+}

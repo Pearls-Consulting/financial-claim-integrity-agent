@@ -13,13 +13,15 @@ counted against the claim).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Callable
 
 import yaml
 
-from app.domain.models import Claim, ClaimType, Finding, GateRun, RuleSource, Severity
+from app.domain.models import Claim, ClaimType, ContractKind, Finding, GateRun, RuleSource, Severity
 from app.services.validators import zatca_qr
 
 RULEPACK_DIR = Path(__file__).parent / "rulepacks"
@@ -233,18 +235,71 @@ def boq_lines_match(claim: Claim, params: dict) -> CheckOutcome:
 
 @check("cumulative_within_contract")
 def cumulative_within_contract(claim: Claim, params: dict) -> CheckOutcome:
-    cumulative = round(claim.cumulative_prior + claim.claim_amount_total, 2)
+    # Like-for-like basis: BoQ prices, the contract value, and the disbursement
+    # history are all VAT-exclusive, so the claim's BASE amount is what counts
+    # against the ceiling. (Whether client contracts state the ceiling incl. or
+    # excl. VAT is a POC-P01 question — this is the BoQ-consistent default.)
+    cumulative = round(claim.cumulative_prior + claim.claim_amount_base, 2)
+    if claim.contract_value <= 0:
+        # A zero header value means "not provided", not "the contract is worth
+        # nothing" — failing against a fabricated ceiling would overstate what
+        # the agent knows. Warn and route to the reviewer instead.
+        return CheckOutcome(
+            ok=False,
+            severity_override=Severity.warn,
+            detail_en=f"No contract value on the claim header — the {cumulative:,.2f} cumulative claims (excl. VAT) cannot be assessed against a ceiling.",
+            detail_ar=f"لا توجد قيمة عقد في بيانات المطالبة — يتعذر التحقق من إجمالي المطالبات {cumulative:,.2f} (بدون الضريبة) مقابل سقف العقد.",
+            evidence={"cumulative_base": cumulative, "contract_value": None},
+        )
+    remaining = round(claim.contract_value - cumulative, 2)
     ok = cumulative <= claim.contract_value + 0.01
     return CheckOutcome(
         ok=ok,
-        detail_en=f"Cumulative claimed {cumulative:,.2f} vs contract value {claim.contract_value:,.2f}.",
-        detail_ar=f"إجمالي المطالبات {cumulative:,.2f} مقابل قيمة العقد {claim.contract_value:,.2f}.",
-        evidence={"cumulative": cumulative, "contract_value": claim.contract_value},
+        detail_en=(
+            f"Cumulative claimed (excl. VAT) {cumulative:,.2f} is within the contract value {claim.contract_value:,.2f} — the claim passes, with {remaining:,.2f} of the contract remaining."
+            if ok
+            else f"Cumulative claimed (excl. VAT) {cumulative:,.2f} exceeds the contract value {claim.contract_value:,.2f} by {-remaining:,.2f}."
+        ),
+        detail_ar=(
+            f"إجمالي المطالبات (بدون الضريبة) {cumulative:,.2f} ضمن قيمة العقد {claim.contract_value:,.2f} — المطالبة مقبولة ويتبقى {remaining:,.2f} من قيمة العقد."
+            if ok
+            else f"إجمالي المطالبات (بدون الضريبة) {cumulative:,.2f} يتجاوز قيمة العقد {claim.contract_value:,.2f} بمقدار {-remaining:,.2f}."
+        ),
+        evidence={"cumulative_base": cumulative, "contract_value": claim.contract_value, "remaining": remaining},
+    )
+
+
+@check("payment_not_already_disbursed")
+def payment_not_already_disbursed(claim: Claim, params: dict) -> CheckOutcome:
+    # Prior payments on a contract are numbered 1..prior_payment_count, so a
+    # claim reusing a number in that range asks to pay the same دفعة twice —
+    # a verbatim rejection reason in the client's claims screen ("رقم الدفعة
+    # تم صرفها مسبقاً"), stated as such rather than as a sequence slip.
+    if claim.payment_no < 1:
+        return CheckOutcome(ok=None, detail_en="No payment number on the claim.", detail_ar="لا يوجد رقم دفعة في المطالبة.")
+    duplicate = claim.payment_no <= claim.prior_payment_count
+    return CheckOutcome(
+        ok=not duplicate,
+        detail_en=(
+            f"Payment no. {claim.payment_no} was already disbursed — {claim.prior_payment_count} payment(s) are on record for this contract."
+            if duplicate
+            else f"Payment no. {claim.payment_no} has not been disbursed before ({claim.prior_payment_count} prior payment(s))."
+        ),
+        detail_ar=(
+            f"رقم الدفعة {claim.payment_no} تم صرفها مسبقاً — عدد الدفعات المصروفة على هذا العقد {claim.prior_payment_count}."
+            if duplicate
+            else f"رقم الدفعة {claim.payment_no} لم يُصرف مسبقاً ({claim.prior_payment_count} دفعة/دفعات سابقة)."
+        ),
+        evidence={"payment_no": claim.payment_no, "prior_payment_count": claim.prior_payment_count},
     )
 
 
 @check("payment_sequence")
 def payment_sequence(claim: Claim, params: dict) -> CheckOutcome:
+    if 1 <= claim.payment_no <= claim.prior_payment_count:
+        # Reusing an already-disbursed number is the stronger duplicate finding
+        # (payment_not_already_disbursed) — don't double-report it as a slip.
+        return CheckOutcome(ok=None, detail_en="Covered by the duplicate-disbursement check.", detail_ar="مشمول بفحص تكرار الصرف.")
     expected = claim.prior_payment_count + 1
     ok = claim.payment_no == expected
     return CheckOutcome(
@@ -255,17 +310,100 @@ def payment_sequence(claim: Claim, params: dict) -> CheckOutcome:
     )
 
 
+@check("claim_type_consistent")
+def claim_type_consistent(claim: Claim, params: dict) -> CheckOutcome:
+    """نوع المستخلص must agree with the payment history — reviewers reject for
+    this verbatim ('تعديل نوع المستخلص لدوري'). Exact final settlement math is
+    the separate final_claim_closes_contract check."""
+    if claim.claim_type is ClaimType.final:
+        if claim.contract_value <= 0:
+            return CheckOutcome(
+                ok=None,
+                detail_en="No contract value — whether this is really the final claim cannot be judged.",
+                detail_ar="لا توجد قيمة عقد — يتعذر الحكم على كون المطالبة نهائية.",
+            )
+        shortfall = round(claim.contract_value - claim.cumulative_prior - claim.claim_amount_base, 2)
+        if shortfall > 0.01:
+            return CheckOutcome(
+                ok=False,
+                detail_en=(
+                    f"Claim is typed 'final' but {shortfall:,.2f} of the contract value would remain unclaimed after it — "
+                    "per the disbursement record this is not the final claim; change the claim type to 'periodic'."
+                ),
+                detail_ar=(
+                    f"نوع المستخلص 'نهائي' بينما يتبقى {shortfall:,.2f} من قيمة العقد بعد هذه المطالبة — "
+                    "وفق سجل الصرف ليست هذه الدفعة النهائية؛ يجب تعديل نوع المستخلص لدوري."
+                ),
+                evidence={"claim_type": claim.claim_type.value, "remaining_after_claim": shortfall, "contract_value": claim.contract_value},
+            )
+        return CheckOutcome(
+            ok=True,
+            detail_en="Final claim type is consistent — the contract value is fully consumed.",
+            detail_ar="نوع المستخلص النهائي متسق — قيمة العقد مستنفدة بالكامل.",
+            evidence={"claim_type": claim.claim_type.value, "contract_value": claim.contract_value},
+        )
+    if claim.claim_type is ClaimType.first and claim.prior_payment_count > 0:
+        return CheckOutcome(
+            ok=False,
+            detail_en=(
+                f"Claim is typed 'first payment' but {claim.prior_payment_count} payment(s) were already disbursed on this contract — the type should be 'periodic'."
+            ),
+            detail_ar=f"نوع المستخلص 'دفعة أولى' رغم صرف {claim.prior_payment_count} دفعة/دفعات سابقة على هذا العقد — يجب تعديل نوع المستخلص لدوري.",
+            evidence={"claim_type": claim.claim_type.value, "prior_payment_count": claim.prior_payment_count},
+        )
+    remaining = round(claim.contract_value - claim.cumulative_prior - claim.claim_amount_base, 2)
+    # Exact closure only: an overshoot is cumulative_within_contract's failure,
+    # not a typing problem.
+    if claim.contract_value > 0 and abs(remaining) <= 0.01:
+        return CheckOutcome(
+            ok=False,
+            severity_override=Severity.warn,
+            detail_en=(
+                f"This claim consumes the full remaining contract value but is typed '{claim.claim_type.value}' — expected a final claim (مستخلص نهائي)."
+            ),
+            detail_ar="هذه المطالبة تستنفد كامل قيمة العقد المتبقية لكن نوعها ليس نهائياً — يُتوقع مستخلص نهائي.",
+            evidence={"claim_type": claim.claim_type.value, "remaining_after_claim": remaining, "contract_value": claim.contract_value},
+        )
+    return CheckOutcome(
+        ok=True,
+        detail_en=f"Claim type '{claim.claim_type.value}' is consistent with the payment history.",
+        detail_ar="نوع المستخلص متسق مع سجل الدفعات.",
+        evidence={"claim_type": claim.claim_type.value, "prior_payment_count": claim.prior_payment_count},
+    )
+
+
 @check("final_claim_closes_contract")
 def final_claim_closes_contract(claim: Claim, params: dict) -> CheckOutcome:
     if claim.claim_type is not ClaimType.final:
         return CheckOutcome(ok=None, detail_en="Not a final claim.", detail_ar="ليست دفعة نهائية.")
-    cumulative = round(claim.cumulative_prior + claim.claim_amount_total, 2)
-    ok = abs(cumulative - claim.contract_value) <= 0.01
+    cumulative = round(claim.cumulative_prior + claim.claim_amount_base, 2)
+    if claim.contract_value <= 0:
+        return CheckOutcome(
+            ok=False,
+            severity_override=Severity.warn,
+            detail_en="No contract value on the claim header — final settlement cannot be verified.",
+            detail_ar="لا توجد قيمة عقد في بيانات المطالبة — يتعذر التحقق من الإقفال النهائي للعقد.",
+            evidence={"cumulative_base": cumulative, "contract_value": None},
+        )
+    difference = round(cumulative - claim.contract_value, 2)
+    if difference < -0.01:
+        # A shortfall means it's not really the final claim — that's
+        # claim_type_consistent's finding ('change the type to periodic').
+        return CheckOutcome(ok=None, detail_en="Covered by the claim-type check.", detail_ar="مشمول بفحص نوع المستخلص.")
+    ok = abs(difference) <= 0.01
     return CheckOutcome(
         ok=ok,
-        detail_en=f"Final claim: cumulative {cumulative:,.2f} should equal contract value {claim.contract_value:,.2f}.",
-        detail_ar=f"دفعة نهائية: الإجمالي {cumulative:,.2f} يجب أن يساوي قيمة العقد {claim.contract_value:,.2f}.",
-        evidence={"cumulative": cumulative, "contract_value": claim.contract_value},
+        detail_en=(
+            f"Final claim: cumulative (excl. VAT) {cumulative:,.2f} equals the contract value — the contract closes out fully."
+            if ok
+            else f"Final claim: cumulative (excl. VAT) {cumulative:,.2f} should equal contract value {claim.contract_value:,.2f} (difference {difference:+,.2f})."
+        ),
+        detail_ar=(
+            f"دفعة نهائية: الإجمالي (بدون الضريبة) {cumulative:,.2f} يساوي قيمة العقد — العقد مُقفل بالكامل."
+            if ok
+            else f"دفعة نهائية: الإجمالي (بدون الضريبة) {cumulative:,.2f} يجب أن يساوي قيمة العقد {claim.contract_value:,.2f} (الفارق {difference:+,.2f})."
+        ),
+        evidence={"cumulative_base": cumulative, "contract_value": claim.contract_value, "difference": difference},
     )
 
 
@@ -276,20 +414,37 @@ def final_claim_closes_contract(claim: Claim, params: dict) -> CheckOutcome:
 _QTY_TOL = 1e-6
 
 
-@check("receipt_present")
-def receipt_present(claim: Claim, params: dict) -> CheckOutcome:
-    rec = claim.documents.receipt
-    if rec is None:
+@check("acceptance_present")
+def acceptance_present(claim: Claim, params: dict) -> CheckOutcome:
+    """One acceptance document per contract kind: the goods receipt for goods,
+    the Certificate of Completion for works. The ERP product receipt posting
+    is a cross-check when it exists, never a second acceptance."""
+    if claim.contract_kind is ContractKind.goods:
+        rec = claim.documents.receipt
+        if rec is None:
+            return CheckOutcome(
+                ok=False,
+                detail_en="Goods contract: no goods receipt (إيصال الاستلام) on the claim — acceptance of the delivery is not evidenced; the three-way match cannot be completed.",
+                detail_ar="عقد توريد: لا يوجد إيصال استلام للبضاعة على المطالبة — الاستلام غير مُثبت ولا يمكن إتمام المطابقة الثلاثية.",
+            )
+        return CheckOutcome(
+            ok=True,
+            detail_en=f"Goods receipt {rec.receipt_no or '(unnumbered)'} dated {rec.receipt_date or '—'} with {len(rec.lines)} line(s) evidences acceptance.",
+            detail_ar=f"إيصال الاستلام {rec.receipt_no or '(بدون رقم)'} بتاريخ {rec.receipt_date or '—'} ويتضمن {len(rec.lines)} بند/بنود يُثبت الاستلام.",
+            evidence={"receipt_no": rec.receipt_no, "receipt_date": rec.receipt_date},
+        )
+    coc = claim.documents.coc
+    if coc is None:
         return CheckOutcome(
             ok=False,
-            detail_en="No product receipt (إيصال استلام) posted in the ERP for this claim — the three-way match cannot be completed.",
-            detail_ar="لا يوجد إيصال استلام منتجات مسجل في النظام لهذه المطالبة — لا يمكن إتمام المطابقة الثلاثية.",
+            detail_en="Works contract: no Certificate of Completion (محضر الإنجاز) on the claim — acceptance of the works is not evidenced.",
+            detail_ar="عقد أعمال: لا يوجد محضر إنجاز على المطالبة — استلام الأعمال غير مُثبت.",
         )
     return CheckOutcome(
         ok=True,
-        detail_en=f"Product receipt {rec.receipt_no} posted with {len(rec.lines)} line(s).",
-        detail_ar=f"إيصال الاستلام {rec.receipt_no} مسجل ويتضمن {len(rec.lines)} بند/بنود.",
-        evidence={"receipt_no": rec.receipt_no, "receipt_date": rec.receipt_date},
+        detail_en=f"Certificate of Completion {coc.coc_no or '(unnumbered)'} dated {coc.coc_date or '—'} evidences acceptance of the works.",
+        detail_ar=f"محضر الإنجاز {coc.coc_no or '(بدون رقم)'} بتاريخ {coc.coc_date or '—'} يُثبت استلام الأعمال.",
+        evidence={"coc_no": coc.coc_no, "coc_date": coc.coc_date},
     )
 
 
@@ -395,6 +550,231 @@ def coc_delay_vs_penalties(claim: Claim, params: dict) -> CheckOutcome:
             else "إجابات المحضر متسقة مع سجل الغرامات."
         ),
         evidence={"penalties_total": total_penalties, "coc_has_delay": coc.has_delay, "coc_has_stoppage": coc.has_stoppage, "coc_has_observations": coc.has_observations},
+    )
+
+
+_DATE_RE = re.compile(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})")
+
+
+def _days_ar(n: int) -> str:
+    """Arabic count form for days: يوم واحد / يومان / 3-10 أيام / 11+ يوماً."""
+    n = abs(n)
+    if n == 1:
+        return "يوم واحد"
+    if n == 2:
+        return "يومين"
+    if 3 <= n <= 10:
+        return f"{n} أيام"
+    return f"{n} يوماً"
+
+
+def _parse_date(value: str) -> date | None:
+    m = _DATE_RE.search(value or "")
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+def _completion_vs_end(claim: Claim) -> tuple[date | None, date | None, str]:
+    """(contract end, acceptance date, acceptance label) — the date pair the
+    delay inference runs on. Contract end comes from the claim header, else the
+    contract document; the acceptance date is the COC date for works and the
+    receipt date for goods. Either side may be None (unknown)."""
+    contract = claim.documents.contract
+    end = _parse_date(claim.contract_end_date) or (_parse_date(contract.end_date) if contract else None)
+    coc, rec = claim.documents.coc, claim.documents.receipt
+    if claim.contract_kind is ContractKind.goods:
+        return end, (_parse_date(rec.receipt_date) if rec else None), "delivery date"
+    return end, (_parse_date(coc.coc_date) if coc else None), "COC date"
+
+
+@check("delay_from_dates")
+def delay_from_dates(claim: Claim, params: dict) -> CheckOutcome:
+    """Infer delay from dates alone — independent of what the COC declares and
+    of whether anyone logged a penalty. Contractual end date (claim header,
+    else the contract document) vs the acceptance date (COC date for works,
+    receipt date for goods)."""
+    coc = claim.documents.coc
+    end, done, done_label = _completion_vs_end(claim)
+    if end is None or done is None:
+        return CheckOutcome(
+            ok=None,
+            detail_en="Contract end date or acceptance date not available — delay cannot be inferred.",
+            detail_ar="تاريخ نهاية العقد أو تاريخ الاستلام غير متوفر — يتعذر استنتاج التأخير.",
+        )
+    delay = (done - end).days
+    penalties_total = round(sum(p.amount for p in claim.documents.penalties), 2)
+    evidence = {
+        "contract_end": end.isoformat(),
+        "completion_date": done.isoformat(),
+        "delay_days": max(delay, 0),
+        "penalties_total": penalties_total,
+    }
+    if coc is not None:
+        evidence["coc_has_delay"] = coc.has_delay
+    if delay <= 0:
+        return CheckOutcome(
+            ok=True,
+            detail_en=f"{done_label.capitalize()} {done.isoformat()} is within the contract period (ends {end.isoformat()}, {-delay} day(s) to spare).",
+            detail_ar=f"تاريخ الاستلام {done.isoformat()} ضمن مدة العقد (تنتهي في {end.isoformat()}، قبل الموعد بـ {_days_ar(delay)}).",
+            evidence=evidence,
+        )
+    if claim.contract_kind is ContractKind.works and coc is not None and coc.has_delay is False:
+        return CheckOutcome(
+            ok=False,
+            detail_en=f"The dates show {delay} day(s) of delay ({done_label} {done.isoformat()} vs contract end {end.isoformat()}) but the COC declares no delay — contradiction.",
+            detail_ar=f"التواريخ تُظهر تأخيراً قدره {_days_ar(delay)} (تاريخ المحضر {done.isoformat()} مقابل نهاية العقد {end.isoformat()}) بينما يذكر محضر الإنجاز عدم وجود تأخير — تناقض.",
+            evidence=evidence,
+        )
+    if penalties_total <= 0:
+        return CheckOutcome(
+            ok=False,
+            severity_override=Severity.warn,
+            detail_en=f"{delay} day(s) of delay per the dates ({done_label} {done.isoformat()} vs contract end {end.isoformat()}) with no penalty on record — assess the delay penalty under the contract / procurement law.",
+            detail_ar=f"تأخير قدره {_days_ar(delay)} وفق التواريخ (الاستلام {done.isoformat()} مقابل نهاية العقد {end.isoformat()}) دون غرامة مسجلة — يلزم تقدير غرامة التأخير وفق العقد / نظام المنافسات.",
+            evidence=evidence,
+        )
+    return CheckOutcome(
+        ok=True,
+        detail_en=f"{delay} day(s) of delay per the dates; penalties totalling {penalties_total:,.2f} are on record.",
+        detail_ar=f"تأخير قدره {_days_ar(delay)} وفق التواريخ؛ غرامات بمجموع {penalties_total:,.2f} مسجلة.",
+        evidence=evidence,
+    )
+
+
+@check("penalties_vs_contract_terms")
+def penalties_vs_contract_terms(claim: Claim, params: dict) -> CheckOutcome:
+    """Measure the penalty RECORD against the contract's own penalty CLAUSES,
+    as read from the contract document (extraction/structuring.py).
+
+    Deterministic on what the clauses allow computing:
+    - a per-day / per-week delay rate -> the expected penalty for the inferred
+      delay (capped by the printed ceiling), compared to the recorded total;
+    - a flat/max rate (e.g. "لا تتجاوز ١٠٪ من قيمة البند") -> presence when
+      delay exists, and the ceiling as an upper bound;
+    - a cap (٢٠٪ من قيمة العقد) -> the recorded total must not exceed it.
+    """
+    contract = claim.documents.contract
+    terms = [t for t in (contract.penalty_terms if contract else []) if t.kind == "delay" and (t.rate_percent or t.cap_percent)]
+    if not terms:
+        return CheckOutcome(
+            ok=None,
+            detail_en="No penalty clause read from the contract — nothing to measure the penalty record against.",
+            detail_ar="لم تُقرأ بنود غرامات من العقد — لا يوجد مرجع تعاقدي لمطابقة سجل الغرامات.",
+        )
+    term = max(terms, key=lambda t: (bool(t.per), t.rate_percent))  # prefer a computable rate
+    cap_percent = max((t.cap_percent for t in terms), default=0.0)
+    basis_amount = claim.contract_value or (contract.value_base if contract else 0.0)
+    penalties_total = round(sum(p.amount for p in claim.documents.penalties), 2)
+    end, done, done_label = _completion_vs_end(claim)
+
+    term_ar = f"غرامة تأخير {term.rate_percent:g}٪" + {"day": " عن كل يوم", "week": " عن كل أسبوع"}.get(term.per, "")
+    term_en = f"delay penalty {term.rate_percent:g}%" + {"day": " per day", "week": " per week"}.get(term.per, "")
+    if term.basis:
+        term_ar += f" من {term.basis}"
+        term_en += f" of {term.basis}"
+    if cap_percent:
+        term_ar += f" بحد أقصى {cap_percent:g}٪"
+        term_en += f", capped at {cap_percent:g}%"
+    # The expected amount is only computable when the rate applies to the
+    # CONTRACT VALUE. A line-scoped basis (قيمة البند / الأعمال المتأخرة)
+    # cannot be extrapolated to the whole contract — the clause is cited and
+    # a penalty demanded, but no figure is invented.
+    basis_is_contract = not term.basis or "عقد" in term.basis or "contract" in term.basis.lower()
+    evidence: dict = {
+        "contract_penalty": {
+            "rate_percent": term.rate_percent,
+            "per": term.per or None,
+            "basis": term.basis or None,
+            "cap_percent": cap_percent or None,
+            "clause_ref": term.ref or None,
+        },
+        "penalties_total": penalties_total,
+    }
+
+    cap_amount = round(cap_percent / 100.0 * basis_amount, 2) if cap_percent and basis_amount else 0.0
+    if cap_amount and penalties_total > cap_amount + 0.01:
+        evidence["cap_amount"] = cap_amount
+        return CheckOutcome(
+            ok=False,
+            detail_en=(
+                f"Recorded penalties {penalties_total:,.2f} exceed the contract's ceiling of {cap_percent:g}% "
+                f"of the contract value ({cap_amount:,.2f})."
+            ),
+            detail_ar=(
+                f"الغرامات المسجلة {penalties_total:,.2f} تتجاوز الحد الأقصى التعاقدي {cap_percent:g}٪ "
+                f"من قيمة العقد ({cap_amount:,.2f})."
+            ),
+            evidence=evidence,
+        )
+
+    if end is None or done is None:
+        return CheckOutcome(
+            ok=None,
+            detail_en=f"Contract sets {term_en}, but the delay cannot be inferred (missing contract end or acceptance date).",
+            detail_ar=f"ينص العقد على {term_ar}، لكن يتعذر استنتاج التأخير (تاريخ نهاية العقد أو تاريخ الاستلام غير متوفر).",
+            evidence=evidence,
+        )
+    delay = max((done - end).days, 0)
+    evidence["delay_days"] = delay
+    if delay == 0:
+        return CheckOutcome(
+            ok=True,
+            detail_en=f"Contract sets {term_en}; {done_label} {done.isoformat()} is on time — no penalty due.",
+            detail_ar=f"ينص العقد على {term_ar}؛ الاستلام في {done.isoformat()} ضمن المدة — لا غرامة مستحقة.",
+            evidence=evidence,
+        )
+
+    # Delay exists. Compute the expected amount when the clause gives a time
+    # rate over the contract value; otherwise the clause still demands an
+    # assessment (bounded by cap).
+    units = delay if term.per == "day" else (-(-delay // 7) if term.per == "week" else 0)
+    expected = (
+        round(min(term.rate_percent / 100.0 * units * basis_amount, cap_amount or float("inf")), 2)
+        if units and basis_amount and basis_is_contract
+        else 0.0
+    )
+    if expected:
+        evidence["expected_penalty"] = expected
+    if penalties_total <= 0:
+        return CheckOutcome(
+            ok=False,
+            detail_en=(
+                f"{delay} day(s) of delay and the contract sets {term_en}"
+                + (f" — expected ≈ {expected:,.2f}" if expected else "")
+                + ", but no penalty is on record."
+            ),
+            detail_ar=(
+                f"تأخير قدره {_days_ar(delay)} وينص العقد على {term_ar}"
+                + (f" — الغرامة المتوقعة ≈ {expected:,.2f}" if expected else "")
+                + "، ولا توجد غرامة مسجلة."
+            ),
+            evidence=evidence,
+        )
+    if expected and penalties_total < expected - 0.01:
+        return CheckOutcome(
+            ok=False,
+            severity_override=Severity.warn,
+            detail_en=f"Recorded penalties {penalties_total:,.2f} are below the contract's expected {expected:,.2f} ({term_en} × {delay} day(s) of delay).",
+            detail_ar=f"الغرامات المسجلة {penalties_total:,.2f} أقل من المتوقع تعاقدياً {expected:,.2f} ({term_ar} × {_days_ar(delay)}).",
+            evidence=evidence,
+        )
+    return CheckOutcome(
+        ok=True,
+        detail_en=(
+            f"Recorded penalties {penalties_total:,.2f} are consistent with the contract clause ({term_en})"
+            + (f"; expected ≈ {expected:,.2f}" if expected else "")
+            + "."
+        ),
+        detail_ar=(
+            f"الغرامات المسجلة {penalties_total:,.2f} متسقة مع بند العقد ({term_ar})"
+            + (f"؛ المتوقع ≈ {expected:,.2f}" if expected else "")
+            + "."
+        ),
+        evidence=evidence,
     )
 
 

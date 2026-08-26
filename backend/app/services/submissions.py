@@ -14,6 +14,7 @@ stored relative to the project root, which is how the extractor resolves them.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import UploadFile
@@ -40,6 +41,24 @@ def stage_file(claim_id: str, upload: UploadFile, doc_type: str) -> ClaimFile:
     dest = dest_dir / _safe_name(upload.filename or doc_type)
     dest.write_bytes(upload.file.read())
     return ClaimFile(path=str(dest.relative_to(PROJECT_ROOT)).replace("\\", "/"), doc_type=doc_type)
+
+
+def drop_files(claim: Claim, predicate: Callable[[ClaimFile], bool]) -> None:
+    """Remove matching source files from the claim AND from the upload dir, so a
+    replaced document leaves no stale record or file behind. A file that is
+    still referenced by another (kept) slot stays on disk."""
+    dropped = [f for f in claim.source_files if predicate(f)]
+    claim.source_files = [f for f in claim.source_files if not predicate(f)]
+    kept_paths = {f.path for f in claim.source_files}
+    for f in dropped:
+        if f.path in kept_paths:
+            continue
+        path = (PROJECT_ROOT / f.path).resolve()
+        if path.is_relative_to(UPLOAD_DIR.resolve()) and path.is_file():
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
 
 def add(claim: Claim) -> None:

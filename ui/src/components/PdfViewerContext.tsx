@@ -12,11 +12,16 @@ export interface PdfViewRequest {
   index: number
   /** Original filename, shown in the reader header. */
   fileName?: string
+  /** 1-based page to land on (the page the value was read from, if known). */
+  page?: number | null
   /** Text to locate + highlight (searched across the whole document). */
   highlight?: string
   /** Independent extra terms to mark wherever they appear (e.g. the BoQ item
    *  code alongside its unit price). Never bias page recovery. */
   highlightAlso?: string[]
+  /** Weak anchor — the verbatim clause/excerpt the value came from. Tried
+   *  LAST by the OCR-locate fallback (it usually leads with the label). */
+  highlightExtra?: string
   /** Field label, shown under the filename for context. */
   fieldName?: string
   /** Bumped per request so re-opening the same document re-runs the jump. */

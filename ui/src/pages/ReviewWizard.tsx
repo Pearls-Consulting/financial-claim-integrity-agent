@@ -3,26 +3,36 @@ import { Link, useParams } from "react-router-dom"
 import {
   ArrowLeft,
   ArrowRight,
+  BadgeCheck,
   Check,
   CircleDashed,
+  ClipboardCheck,
   Database,
+  Download,
+  FileSpreadsheet,
+  GitCompareArrows,
   Loader2,
+  PackageCheck,
   Pencil,
   Plus,
+  ReceiptText,
   Sparkles,
   Trash2,
   Upload,
   X,
 } from "lucide-react"
 
+import { AttachmentCards, REQUIRED_ATTACHMENTS } from "@/components/AttachmentCards"
 import { FindingCard } from "@/components/FindingCard"
+import { LineItemsTable } from "@/components/LineItemsTable"
+import { PenaltyTermsCard } from "@/components/PenaltyTermsCard"
 import { QrPanel } from "@/components/QrPanel"
 import { StatusPill } from "@/components/StatusPill"
 import { Button } from "@/components/ui/button"
-import { api } from "@/lib/api"
+import { api, exportUrl } from "@/lib/api"
 import { useLang } from "@/lib/i18n"
 import { cn, formatMoney } from "@/lib/utils"
-import type { Claim, GateRun, RunResult, Stage } from "@/types/domain"
+import type { Claim, DetectedAttachment, GateRun, RunResult, Stage } from "@/types/domain"
 
 /**
  * Guided claim review — one step per review gate, mirroring the procedure
@@ -115,17 +125,6 @@ function UploadSlot({
   )
 }
 
-/** ERP attachment names the pre-finance gate requires (prefinance.yaml). */
-const ERP_ATTACHMENTS: { key: string; en: string; ar: string }[] = [
-  { key: "contract", en: "Contract", ar: "العقد" },
-  { key: "boq", en: "Bill of Quantities", ar: "جدول الكميات" },
-  { key: "award letter", en: "Award letter", ar: "خطاب الترسية" },
-  { key: "work commencement", en: "Work commencement minutes", ar: "محضر البدء بالأعمال" },
-  { key: "commercial registration", en: "Commercial registration", ar: "السجل التجاري" },
-  { key: "zakat certificate", en: "Zakat certificate", ar: "شهادة الزكاة" },
-  { key: "gosi certificate", en: "GOSI certificate", ar: "شهادة التأمينات الاجتماعية" },
-]
-
 interface PenaltyRow {
   reason_ar: string
   amount: string
@@ -140,25 +139,25 @@ type Phase = "form" | "running" | "results"
 const GATE_BY_STEP: Record<GateStepNo, string> = {
   1: "intake",
   2: "boq_match",
-  3: "coc_consistency",
-  4: "three_way_match",
+  3: "three_way_match",
+  4: "final_check",
   5: "prefinance",
 }
 const CUM_GATES: Record<GateStepNo, string[]> = {
   1: ["intake"],
   2: ["intake", "boq_match"],
-  3: ["intake", "boq_match", "coc_consistency"],
-  4: ["intake", "boq_match", "coc_consistency", "three_way_match"],
-  5: ["intake", "boq_match", "coc_consistency", "three_way_match", "prefinance"],
+  3: ["intake", "boq_match", "three_way_match"],
+  4: ["intake", "boq_match", "three_way_match", "final_check"],
+  5: ["intake", "boq_match", "three_way_match", "final_check", "prefinance"],
 }
 
-const STEP_LABELS: { no: StepNo; en: string; ar: string }[] = [
-  { no: 1, en: "Tax invoice", ar: "الفاتورة الضريبية" },
-  { no: 2, en: "Contract & BoQ", ar: "العقد وجدول الكميات" },
-  { no: 3, en: "Completion certificate", ar: "محضر الإنجاز" },
-  { no: 4, en: "Three-way match", ar: "المطابقة الثلاثية" },
-  { no: 5, en: "Pre-finance package", ar: "الملف قبل المالية" },
-  { no: 6, en: "Recommendation", ar: "التوصية" },
+const STEP_LABELS: { no: StepNo; en: string; ar: string; icon: React.ElementType }[] = [
+  { no: 1, en: "Tax invoice", ar: "الفاتورة الضريبية", icon: ReceiptText },
+  { no: 2, en: "Contract & BoQ", ar: "العقد وجدول الكميات", icon: FileSpreadsheet },
+  { no: 3, en: "Acceptance & three-way match", ar: "الاستلام والمطابقة الثلاثية", icon: GitCompareArrows },
+  { no: 4, en: "Final check", ar: "الفحص النهائي", icon: ClipboardCheck },
+  { no: 5, en: "Pre-finance package", ar: "الملف قبل المالية", icon: PackageCheck },
+  { no: 6, en: "Recommendation", ar: "التوصية", icon: BadgeCheck },
 ]
 
 /** Loader narration per step — what the pipeline is actually doing. */
@@ -166,7 +165,7 @@ const RUN_PHASES: Record<GateStepNo, { en: string; ar: string }[]> = {
   1: [
     { en: "Reading the tax invoice (Layout OCR)", ar: "قراءة الفاتورة الضريبية (تعرف ضوئي)" },
     { en: "Structuring extracted fields", ar: "هيكلة الحقول المستخرجة" },
-    { en: "Decoding & verifying the ZATCA QR", ar: "فك رمز الاستجابة والتحقق منه" },
+    { en: "Decoding & verifying the ZATCA QR", ar: "فك رمز QR والتحقق منه وفق متطلبات هيئة الزكاة والضريبة" },
     { en: "Intake & authenticity rules", ar: "قواعد الاستلام والتحقق من الصحة" },
   ],
   2: [
@@ -176,14 +175,15 @@ const RUN_PHASES: Record<GateStepNo, { en: string; ar: string }[]> = {
     { en: "Contract value & payment sequence rules", ar: "قواعد قيمة العقد وتسلسل الدفعات" },
   ],
   3: [
-    { en: "Reading the Certificate of Completion", ar: "قراءة محضر الإنجاز" },
-    { en: "Cross-checking penalties & project events", ar: "مطابقة الغرامات ووقائع المشروع" },
-    { en: "COC consistency rules", ar: "قواعد اتساق محضر الإنجاز" },
+    { en: "Reading the acceptance document (receipt / COC)", ar: "قراءة مستند الاستلام (إيصال الاستلام / محضر الإنجاز)" },
+    { en: "Reconciling contract ↔ acceptance ↔ invoice", ar: "مطابقة العقد ومستند الاستلام والفاتورة" },
+    { en: "Three-way matching rules", ar: "قواعد المطابقة الثلاثية" },
   ],
   4: [
-    { en: "Loading the ERP product receipt (procedure step 5)", ar: "تحميل إيصال استلام المنتجات من النظام (الخطوة ٥ من الإجراء)" },
-    { en: "Reconciling contract ↔ receipt ↔ invoice quantities", ar: "مطابقة الكميات بين العقد وإيصال الاستلام والفاتورة" },
-    { en: "Three-way matching rules", ar: "قواعد المطابقة الثلاثية" },
+    { en: "Inferring delay from contract & acceptance dates", ar: "استنتاج التأخير من تواريخ العقد والاستلام" },
+    { en: "Measuring the penalty record against the contract's clauses", ar: "مطابقة سجل الغرامات مع بنود الغرامات في العقد" },
+    { en: "Cross-checking penalties & declared project events", ar: "مطابقة الغرامات مع وقائع المشروع المصرّح بها" },
+    { en: "Final-check rules", ar: "قواعد الفحص النهائي" },
   ],
   5: [
     { en: "Checking attachment completeness", ar: "التحقق من اكتمال المرفقات" },
@@ -206,6 +206,9 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
     : 1
 
   const [step, setStep] = React.useState<StepNo>(initialStep)
+  // Furthest step the reviewer has reached — revisiting an earlier step must
+  // not "un-complete" the later ones or discard their cached gate results.
+  const [maxStep, setMaxStep] = React.useState<StepNo>(initialStep)
   const [phase, setPhase] = React.useState<Phase>(() =>
     initialRun && initialStep <= 5 && initialRun.gates.some((g) => g.gate === GATE_BY_STEP[initialStep as GateStepNo])
       ? "results"
@@ -224,6 +227,8 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
     project_no: existing?.project_no ?? "",
     project_name_en: existing?.project_name_en ?? "",
     contract_value: numStr(existing?.contract_value ?? 0),
+    contract_kind: existing?.contract_kind ?? "works",
+    contract_end_date: existing?.contract_end_date ?? "",
     invoice_no: existing?.invoice_no ?? "",
     claim_date: existing?.claim_date ?? "",
     payment_no: existing ? String(existing.payment_no || 1) : "1",
@@ -244,6 +249,45 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
     cumulative_prior: existing ? String(existing.cumulative_prior || 0) : "0",
     prior_payment_count: existing ? String(existing.prior_payment_count || 0) : "0",
   }))
+  const [boqExtracting, setBoqExtracting] = React.useState(false)
+  const [boqNote, setBoqNote] = React.useState<"suggested" | "kept" | "">("")
+  const [endDateNote, setEndDateNote] = React.useState(false)
+
+  /** On BoQ pick: read it and SUGGEST the summed line total as the contract
+   *  value when the reviewer hasn't provided one — a vendor document never
+   *  silently becomes the ceiling that constrains the vendor's own billing,
+   *  so the value lands in an editable field for the reviewer to confirm. */
+  const onPickBoq = async (f: File | null) => {
+    setBoqFile(f)
+    setBoqNote("")
+    if (!f) return
+    setBoqExtracting(true)
+    try {
+      const read = await api.extractBoq(f)
+      const total = (read?.boq ?? []).reduce((sum, l) => sum + l.unit_price * l.quantity, 0)
+      if (total > 0) {
+        if (!(parseFloat(fields.contract_value) > 0)) {
+          setFields((prev) => ({ ...prev, contract_value: total.toFixed(2) }))
+          setBoqNote("suggested")
+        } else {
+          setBoqNote("kept")
+        }
+      }
+      // Contract end date: suggest from the header, never overwrite a value
+      // the reviewer already typed. The suggestion is flagged for explicit
+      // confirmation — it feeds the step-4 delay inference, and a wrong date
+      // fabricates delay (or hides real delay) downstream.
+      const end = read?.contract?.end_date ?? ""
+      if (/^\d{4}-\d{2}-\d{2}/.test(end) && !fields.contract_end_date) {
+        setFields((prev) => (prev.contract_end_date ? prev : { ...prev, contract_end_date: end.slice(0, 10) }))
+        setEndDateNote(true)
+      }
+    } catch {
+      // Suggestion only — extraction failure leaves the form fully manual.
+    } finally {
+      setBoqExtracting(false)
+    }
+  }
 
   // -- step 3: COC + penalties on record -------------------------------------
   const [cocFile, setCocFile] = React.useState<File | null>(null)
@@ -255,14 +299,44 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
     }))
   )
 
-  // -- step 4: ERP attachments + remaining docs ------------------------------
-  const [attachments, setAttachments] = React.useState<Set<string>>(() =>
-    existing?.documents.attachments.length
-      ? new Set(existing.documents.attachments)
-      : new Set(ERP_ATTACHMENTS.map((a) => a.key))
-  )
+  // -- step 4/5: delivery note + vendor-file documents ------------------------
   const [deliveryFile, setDeliveryFile] = React.useState<File | null>(null)
   const [otherFiles, setOtherFiles] = React.useState<File[]>([])
+  const [attachFiles, setAttachFiles] = React.useState<File[]>([])
+  const [attachDetections, setAttachDetections] = React.useState<DetectedAttachment[]>(
+    existing?.documents.detected_attachments ?? []
+  )
+  const [attachExtracting, setAttachExtracting] = React.useState(false)
+
+  /** On vendor-file pick: identify each new document right away (GPT over the
+   *  OCR text, filename heuristic as backstop) so the reviewer sees what the
+   *  agent recognized before running the gate. */
+  const onPickAttachments = async (list: FileList | null) => {
+    const fresh = [...(list ?? [])].filter((f) => !attachFiles.some((e) => e.name === f.name))
+    if (!fresh.length) return
+    setAttachFiles((prev) => [...prev, ...fresh])
+    setAttachExtracting(true)
+    try {
+      const det = await api.extractAttachments(fresh)
+      setAttachDetections((prev) => [
+        ...prev.filter((d) => !det.some((n) => n.file_name === d.file_name)),
+        ...det,
+      ])
+    } catch {
+      // Detection failure never blocks the flow — file in as unidentified.
+      setAttachDetections((prev) => [
+        ...prev,
+        ...fresh.map((f) => ({ file_name: f.name, doc_key: "other", fields: {} })),
+      ])
+    } finally {
+      setAttachExtracting(false)
+    }
+  }
+
+  const removeAttachment = (fileName: string) => {
+    setAttachFiles((prev) => prev.filter((f) => f.name !== fileName))
+    setAttachDetections((prev) => prev.filter((d) => d.file_name !== fileName))
+  }
 
   // -- pipeline state --------------------------------------------------------
   const [claim, setClaim] = React.useState<Claim | null>(existing ?? null)
@@ -354,9 +428,27 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
         if (stepNo === 2) {
           fd.append("cumulative_prior", boqFields.cumulative_prior)
           fd.append("prior_payment_count", boqFields.prior_payment_count)
+          // The ceiling the gate checks against — editable on this step too
+          // (BoQ-suggested or corrected), so it must travel with the run.
+          fd.append("contract_value", fields.contract_value || "0")
+          // Claim type is validated against the payment record at THIS gate,
+          // so it stays editable here.
+          fd.append("claim_type", fields.claim_type)
+          // Contract kind decides the acceptance document step 3 asks for;
+          // the end date feeds the step-4 delay inference.
+          fd.append("contract_kind", fields.contract_kind)
+          fd.append("contract_end_date", fields.contract_end_date)
           if (boqFile) fd.append("contract_boq", boqFile)
         }
         if (stepNo === 3) {
+          // One acceptance document per contract kind.
+          if (fields.contract_kind === "goods") {
+            if (deliveryFile) fd.append("delivery_note", deliveryFile)
+          } else if (cocFile) {
+            fd.append("coc", cocFile)
+          }
+        }
+        if (stepNo === 4) {
           fd.append(
             "penalties",
             JSON.stringify(
@@ -365,13 +457,14 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
                 .map((p) => ({ reason_ar: p.reason_ar, amount: parseFloat(p.amount) || 0, date: p.date }))
             )
           )
-          if (cocFile) fd.append("coc", cocFile)
-        }
-        if (stepNo === 4 && deliveryFile) {
-          fd.append("delivery_note", deliveryFile)
         }
         if (stepNo === 5) {
-          fd.append("attachments", JSON.stringify([...attachments]))
+          // The attachment list is DERIVED from what the agent identified in
+          // the uploads (plus the step-2 contract/BoQ) — not from checkboxes.
+          if (attachFiles.length) {
+            fd.append("detected_attachments", JSON.stringify(attachDetections))
+            for (const f of attachFiles) fd.append("attachment_docs", f)
+          }
           for (const f of otherFiles) fd.append("other", f)
         }
         current = await api.update(current.id, fd)
@@ -382,6 +475,7 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
       await minWait
       setRun(result)
       setPhase("results")
+      setMaxStep((m) => Math.max(m, stepNo) as StepNo)
       api.setProgress(current!.id, stepNo).catch(() => {})
     } catch (e) {
       setError(String(e))
@@ -391,10 +485,15 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
     }
   }
 
+  /** Show a step's cached results when its gate already ran; otherwise its form. */
+  const phaseForStep = (s: StepNo): Phase =>
+    s === 6 || gateFor(s as GateStepNo) ? "results" : "form"
+
   const continueToNext = () => {
     const next = Math.min(step + 1, 6) as StepNo
     setStep(next)
-    setPhase(next === 6 ? "results" : "form")
+    setPhase(phaseForStep(next))
+    setMaxStep((m) => Math.max(m, next) as StepNo)
     if (claim) api.setProgress(claim.id, next).catch(() => {})
   }
 
@@ -422,7 +521,7 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
         <p className="text-muted-foreground mt-1 text-sm">{pick(stage.desc_en, stage.desc_ar)}</p>
         <div className="mt-3 space-y-2">
           {gate.findings.map((f) => (
-            <FindingCard key={f.rule_id} finding={f} claim={claim} />
+            <FindingCard key={f.rule_id} finding={f} claim={claim} extracted={run?.extracted} />
           ))}
         </div>
       </section>
@@ -433,7 +532,7 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
     <div className="flex items-center justify-between">
       <Button variant="ghost" size="sm" onClick={() => setPhase("form")}>
         <Pencil />
-        {t("Adjust & re-run", "تعديل وإعادة الفحص")}
+        {t("Adjust & re-run", "تعديل وإعادة التحليل")}
       </Button>
       <Button onClick={continueToNext}>
         {last ? t("View recommendation", "عرض التوصية") : t("Continue", "متابعة")}
@@ -475,6 +574,24 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
     </div>
   )
 
+  // Pre-finance coverage: which required documents the agent has identified.
+  // The step-2 contract/BoQ upload is one document covering two requirements.
+  const hasContractBoq = !!(stagedName("contract_boq") || boqFile)
+  const hasExportDocs = !!claim?.source_files.some((f) =>
+    ["invoice", "contract_boq", "coc", "delivery_note"].includes(f.doc_type)
+  )
+  const coveredKeys = new Set(attachDetections.filter((d) => d.doc_key !== "other").map((d) => d.doc_key))
+  if (hasContractBoq) {
+    coveredKeys.add("contract")
+    coveredKeys.add("boq")
+  }
+  const missingDocs = REQUIRED_ATTACHMENTS.filter((a) => !coveredKeys.has(a.key))
+  const unrecognized = attachDetections.filter((d) => d.doc_key === "other")
+  const detectedForCards =
+    (run?.extracted?.detected_attachments?.length
+      ? run.extracted.detected_attachments
+      : claim?.documents.detected_attachments) ?? []
+
   return (
     <div>
       <Link to="/" className="text-muted-foreground inline-flex items-center gap-1 text-sm hover:underline">
@@ -485,18 +602,18 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
       <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="font-display text-2xl">
-            {existing ? existing.id : t("New claim review", "فحص مطالبة جديدة")}
+            {existing ? existing.id : t("New claim review", "مراجعة مطالبة جديدة")}
           </h1>
           <p className="text-muted-foreground mt-1 text-sm">
             {existing
               ? pick(existing.project_name_en, existing.project_name_ar) ||
                 t(
                   "Each step feeds one review gate of the procedure.",
-                  "كل خطوة تغذي بوابة فحص من الإجراء."
+                  "كل خطوة تقابل بوابة مراجعة في الإجراء."
                 )
               : t(
                   "Each step feeds one review gate of the procedure — the agent checks as the file builds up.",
-                  "كل خطوة تغذي بوابة فحص من الإجراء — يدقق الوكيل مع اكتمال الملف تدريجياً."
+                  "كل خطوة تقابل بوابة مراجعة في الإجراء — ويدقق الوكيل المستندات أولاً بأول مع اكتمال الملف."
                 )}
           </p>
         </div>
@@ -509,61 +626,84 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
           <Meta label={t("Invoice no.", "رقم الفاتورة")} value={existing.invoice_no || "—"} />
           <Meta
             label={t("Claim type", "نوع المستخلص")}
-            value={existing.claim_type === "final" ? t("Final", "نهائي") : t("Periodic", "دوري")}
+            value={existing.claim_type === "final" ? t("Final", "نهائي") : existing.claim_type === "first" ? t("First payment", "دفعة أولى") : t("Periodic", "دوري")}
           />
-          <Meta label={t("Contract value", "قيمة العقد")} value={formatMoney(existing.contract_value)} />
+          <Meta label={t("Contract value (base)", "قيمة العقد (قبل الضريبة)")} value={formatMoney(existing.contract_value)} />
           <Meta label={t("Claim (incl. VAT)", "المبلغ شامل الضريبة")} value={formatMoney(existing.claim_amount_total)} />
         </div>
       )}
 
-      {/* Stepper — completed steps are clickable to revisit their findings. */}
-      <ol className="mt-5 flex items-center gap-2">
-        {STEP_LABELS.map((s, i) => {
-          const state = step === s.no ? "active" : step > s.no ? "done" : "todo"
-          const jump =
-            state === "done" && phase !== "running"
-              ? () => {
-                  setStep(s.no)
-                  setPhase(
-                    s.no === 6 || (s.no <= 5 && gateFor(s.no as GateStepNo)) ? "results" : "form"
-                  )
-                }
-              : undefined
-          return (
-            <React.Fragment key={s.no}>
-              {i > 0 && <span className="bg-border h-px flex-1" />}
-              <li className="flex items-center gap-2">
+      {/* Stepper — completed steps are clickable to revisit their findings.
+          Mirrors the prequalification wizard's step banner (size-10 icon
+          circles, mid-line connectors, labels beneath). */}
+      <nav aria-label={t("Review steps", "خطوات المراجعة")} className="mt-6">
+        <ol className="flex items-start overflow-x-auto pb-1">
+          {STEP_LABELS.map((s, i) => {
+            const isActive = step === s.no
+            const done = maxStep > s.no || (s.no <= 5 && !!gateFor(s.no as GateStepNo))
+            const Icon = s.icon
+            const isLast = i === STEP_LABELS.length - 1
+            const jump =
+              done && !isActive && phase !== "running"
+                ? () => {
+                    setStep(s.no)
+                    setPhase(phaseForStep(s.no))
+                  }
+                : undefined
+            return (
+              <li key={s.no} className="flex min-w-[96px] flex-1 flex-col items-center">
+                <div className="flex w-full items-center">
+                  <span
+                    className={cn(
+                      "h-px flex-1",
+                      i === 0 ? "bg-transparent" : s.no <= step ? "bg-primary/50" : "bg-border"
+                    )}
+                  />
+                  <button
+                    type="button"
+                    disabled={!jump && !isActive}
+                    onClick={jump}
+                    aria-current={isActive ? "step" : undefined}
+                    className={cn(
+                      "grid size-10 shrink-0 place-items-center rounded-full border-2 transition",
+                      isActive && "border-primary bg-card text-primary ring-primary/20 ring-2",
+                      !isActive && done && "border-primary bg-primary text-primary-foreground",
+                      !isActive && !done && "border-border bg-card text-muted-foreground cursor-not-allowed",
+                      jump && "hover:ring-primary/15 cursor-pointer hover:ring-2"
+                    )}
+                  >
+                    {!isActive && done ? <Check className="size-4" /> : <Icon className="size-4" />}
+                  </button>
+                  <span
+                    className={cn(
+                      "h-px flex-1",
+                      isLast ? "bg-transparent" : s.no < step ? "bg-primary/50" : "bg-border"
+                    )}
+                  />
+                </div>
                 <button
                   type="button"
+                  disabled={!jump && !isActive}
                   onClick={jump}
-                  disabled={!jump}
-                  className={cn("flex items-center gap-2", jump && "cursor-pointer")}
+                  className={cn(
+                    "mt-2.5 px-1 text-center text-xs font-medium leading-tight transition",
+                    isActive
+                      ? "text-primary"
+                      : jump
+                        ? "text-foreground hover:text-primary cursor-pointer"
+                        : "text-muted-foreground cursor-not-allowed"
+                  )}
                 >
-                  <span
-                    className={cn(
-                      "grid size-6 place-items-center rounded-full text-xs font-semibold",
-                      state === "active" && "bg-primary text-primary-foreground",
-                      state === "done" && "bg-ok/15 text-ok",
-                      state === "todo" && "bg-secondary text-secondary-foreground"
-                    )}
-                  >
-                    {state === "done" ? <Check className="size-3.5" /> : s.no}
+                  <span className="text-muted-foreground block text-[10px]">
+                    {t(`Step ${s.no}`, `الخطوة ${s.no}`)}
                   </span>
-                  <span
-                    className={cn(
-                      "text-sm max-lg:hidden",
-                      state === "active" ? "font-medium" : "text-muted-foreground",
-                      jump && "hover:text-foreground hover:underline"
-                    )}
-                  >
-                    {pick(s.en, s.ar)}
-                  </span>
+                  {pick(s.en, s.ar)}
                 </button>
               </li>
-            </React.Fragment>
-          )
-        })}
-      </ol>
+            )
+          })}
+        </ol>
+      </nav>
 
       {error && <p className="text-destructive mt-4 text-sm">{error}</p>}
 
@@ -579,7 +719,7 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
                 ? t("Staged from the ERP attachments.", "مرفقة من نظام تخطيط الموارد.")
                 : t(
                     "Start here — the agent OCR-reads the invoice, prefills the claim fields below, and decodes its ZATCA QR to verify authenticity.",
-                    "ابدأ من هنا — يقرأ الوكيل الفاتورة ويعبّئ حقول المطالبة أدناه ويفك رمز الاستجابة للتحقق من صحتها."
+                    "ابدأ من هنا — يقرأ الوكيل الفاتورة ويعبّئ حقول المطالبة أدناه، ويفك رمز الاستجابة السريعة (QR) للتحقق من صحتها."
                   )
             }
           >
@@ -605,7 +745,7 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
                 <Database className="text-muted-foreground size-4 shrink-0" />
                 <span className="min-w-0 flex-1">
                   <span className="block text-sm font-medium">
-                    {t("Import from Microsoft Dynamics 365", "استيراد من مايكروسوفت داينمكس 365")}
+                    {t("Import from Microsoft Dynamics 365", "استيراد من Microsoft Dynamics 365")}
                   </span>
                   <span className="text-muted-foreground block text-xs">
                     {t("Pull the claim and its attachments from the ERP", "جلب المطالبة ومرفقاتها من النظام")}
@@ -652,7 +792,7 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
               <Field label={t("Project name", "اسم المشروع")}>
                 <input className={inputCls} disabled={ro} value={fields.project_name_en} onChange={set("project_name_en")} />
               </Field>
-              <Field label={t("Contract value (base)", "قيمة العقد الأساسية")}>
+              <Field label={t("Contract value (base)", "قيمة العقد (قبل الضريبة)")}>
                 <input className={inputCls} disabled={ro} type="number" step="any" min="0" value={fields.contract_value} onChange={set("contract_value")} />
               </Field>
             </div>
@@ -677,11 +817,12 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
               </Field>
               <Field label={t("Claim type", "نوع المستخلص")}>
                 <select className={inputCls} disabled={ro} value={fields.claim_type} onChange={set("claim_type")}>
+                  <option value="first">{t("First payment", "دفعة أولى")}</option>
                   <option value="periodic">{t("Periodic", "دوري")}</option>
                   <option value="final">{t("Final", "نهائي")}</option>
                 </select>
               </Field>
-              <Field label={t("Amount excl. VAT", "اجمالي المطالبة بدون الضريبة")}>
+              <Field label={t("Amount excl. VAT", "إجمالي المطالبة (قبل الضريبة)")}>
                 <input className={inputCls} disabled={ro} type="number" step="any" min="0" value={fields.claim_amount_base} onChange={set("claim_amount_base")} />
               </Field>
               <Field label={t("VAT amount", "قيمة الضريبة")}>
@@ -740,16 +881,32 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
               "نسخة البنك من العقد — يطابق الوكيل كل بند في الفاتورة معه ويتحقق من المبالغ مقابل قيمة العقد وجدول الدفعات."
             )}
           >
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               <UploadSlot
                 label={t("Contract / BoQ", "العقد / جدول الكميات")}
-                hint={stagedName("contract_boq") ?? t("PDF — click to choose", "PDF — انقر للاختيار")}
-                file={boqFile}
-                onPick={setBoqFile}
+                hint={
+                  boqExtracting
+                    ? t("Reading the BoQ…", "جارٍ قراءة جدول الكميات…")
+                    : stagedName("contract_boq") ?? t("PDF — click to choose", "PDF — انقر للاختيار")
+                }
+                file={boqExtracting ? null : boqFile}
+                onPick={onPickBoq}
+                busy={boqExtracting}
                 disabled={ro}
-                className="sm:col-span-2"
+                className="sm:col-span-2 lg:col-span-3"
               />
-              <Field label={t("Disbursed before this claim", "سابق الصرف على العقد")}>
+              <Field label={t("Contract value (base)", "قيمة العقد (قبل الضريبة)")}>
+                <input
+                  className={inputCls}
+                  disabled={ro}
+                  type="number"
+                  step="any"
+                  min="0"
+                  value={fields.contract_value}
+                  onChange={set("contract_value")}
+                />
+              </Field>
+              <Field label={t("Disbursed before this claim (excl. VAT)", "سابق الصرف على العقد (بدون الضريبة)")}>
                 <input
                   className={inputCls}
                   disabled={ro}
@@ -770,7 +927,58 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
                   onChange={(e) => setBoqFields((f) => ({ ...f, prior_payment_count: e.target.value }))}
                 />
               </Field>
+              <Field label={t("Claim type", "نوع المستخلص")}>
+                <select className={inputCls} disabled={ro} value={fields.claim_type} onChange={set("claim_type")}>
+                  <option value="first">{t("First payment", "دفعة أولى")}</option>
+                  <option value="periodic">{t("Periodic", "دوري")}</option>
+                  <option value="final">{t("Final", "نهائي")}</option>
+                </select>
+              </Field>
+              <Field label={t("Contract kind", "نوع العقد")}>
+                <select className={inputCls} disabled={ro} value={fields.contract_kind} onChange={set("contract_kind")}>
+                  <option value="works">{t("Works / project (COC)", "أعمال / مشروع (محضر إنجاز)")}</option>
+                  <option value="goods">{t("Goods / supply (goods receipt)", "توريد (إيصال استلام)")}</option>
+                </select>
+              </Field>
+              <Field label={t("Contract end date", "تاريخ نهاية العقد")}>
+                <input
+                  className={inputCls}
+                  disabled={ro}
+                  type="date"
+                  value={fields.contract_end_date}
+                  onChange={(e) => {
+                    setEndDateNote(false)
+                    set("contract_end_date")(e)
+                  }}
+                />
+              </Field>
             </div>
+            {boqNote === "suggested" && (
+              <p className="text-ok mt-2 flex items-center gap-1.5 text-xs">
+                <Check className="size-3.5" />
+                {t(
+                  "Contract value suggested from the BoQ line totals — confirm or correct it before matching.",
+                  "قيمة العقد مقترحة من مجموع بنود جدول الكميات — راجعها وأكدها قبل المطابقة."
+                )}
+              </p>
+            )}
+            {boqNote === "kept" && (
+              <p className="text-muted-foreground mt-2 text-xs">
+                {t(
+                  "Kept the contract value you entered — the BoQ line totals were read but did not overwrite it.",
+                  "تم الإبقاء على قيمة العقد المدخلة — قُرئ مجموع بنود الجدول دون استبدالها."
+                )}
+              </p>
+            )}
+            {endDateNote && fields.contract_end_date && (
+              <p className="text-warn mt-2 flex items-center gap-1.5 text-xs">
+                <CircleDashed className="size-3.5" />
+                {t(
+                  "Contract end date suggested from the contract document — it drives the final check's delay inference, so confirm it against the commencement minutes before matching.",
+                  "تاريخ نهاية العقد مقترح من مستند العقد — وهو أساس استنتاج التأخير في الفحص النهائي، فراجعه مقابل محضر بدء المشروع قبل المطابقة."
+                )}
+              </p>
+            )}
           </Section>
           <div className="flex justify-end">
             <Button size="lg" onClick={() => analyze(2)}>
@@ -784,34 +992,116 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
       {step === 2 && phase === "results" && (
         <div className="mt-5 space-y-5">
           <GateResults stepNo={2} />
+          {run?.extracted && run.extracted.boq.length > 0 && (
+            <LineItemsTable boq={run.extracted.boq} invoice={run.extracted.invoice} claim={claim} />
+          )}
           <ResultActions />
         </div>
       )}
 
-      {/* --------------------------------------------------- step 3: COC */}
+      {/* ------------------------------- step 3: acceptance & three-way match */}
       {step === 3 && phase === "form" && (
         <div className="mt-5 space-y-4">
           <Section
-            title={t("Certificate of Completion (محضر الإنجاز)", "محضر الإنجاز")}
-            desc={t(
-              "Signed by the project manager and director. The agent cross-checks its answers against the claim and the penalty record.",
-              "الموقّع من مدير المشروع ومدير الإدارة. يطابق الوكيل إجاباته مع المطالبة وسجل الغرامات."
-            )}
+            title={
+              fields.contract_kind === "goods"
+                ? t("Goods receipt (إيصال الاستلام)", "إيصال الاستلام")
+                : t("Certificate of Completion (محضر الإنجاز)", "محضر الإنجاز")
+            }
+            desc={
+              fields.contract_kind === "goods"
+                ? t(
+                    "Goods contract: the goods receipt / delivery note evidences acceptance. The agent matches contract/BoQ ↔ received quantities ↔ invoice — billed only what was received, within the contracted quantities.",
+                    "عقد توريد: إيصال الاستلام / إشعار التسليم يُثبت الاستلام. يطابق الوكيل العقد وجدول الكميات مع الكميات المستلمة والفاتورة — لا فوترة إلا لما تم استلامه وضمن الكميات التعاقدية."
+                  )
+                : t(
+                    "Works contract: the Certificate of Completion evidences acceptance — signed by the project manager and director. The agent matches contract/BoQ ↔ certified completion ↔ invoice.",
+                    "عقد أعمال: محضر الإنجاز يُثبت الاستلام — موقّع من مدير المشروع ومدير الإدارة. يطابق الوكيل العقد وجدول الكميات مع الإنجاز المعتمد والفاتورة."
+                  )
+            }
           >
-            <UploadSlot
-              label={t("Certificate of Completion", "محضر الإنجاز")}
-              hint={stagedName("coc") ?? t("PDF — click to choose", "PDF — انقر للاختيار")}
-              file={cocFile}
-              onPick={setCocFile}
-              disabled={ro}
-            />
+            {fields.contract_kind === "goods" ? (
+              claim?.documents.receipt ? (
+                <div>
+                  <p className="text-sm font-medium">
+                    {t("Goods receipt", "إيصال الاستلام")} {claim.documents.receipt.receipt_no}
+                    <span className="text-muted-foreground font-normal">
+                      {" — "}
+                      {claim.documents.receipt.receipt_date}
+                    </span>
+                  </p>
+                  <div className="border-border/70 mt-2 overflow-hidden rounded-md border">
+                    {claim.documents.receipt.lines.map((l) => (
+                      <div
+                        key={l.item_code}
+                        className="border-border/70 bg-muted/40 flex items-center gap-2 border-b px-2.5 py-1.5 text-xs last:border-0"
+                      >
+                        <span className="w-20 shrink-0 font-medium">{l.item_code}</span>
+                        <span className="text-muted-foreground min-w-0 flex-1 truncate" dir="auto">
+                          {l.description_ar}
+                        </span>
+                        <span className="tabular-nums">
+                          {t("qty", "الكمية")} {l.quantity}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <UploadSlot
+                    label={t("Goods receipt / delivery note", "إيصال الاستلام / إشعار التسليم")}
+                    hint={stagedName("delivery_note") ?? t("PDF — click to choose", "PDF — انقر للاختيار")}
+                    file={deliveryFile}
+                    onPick={setDeliveryFile}
+                    disabled={ro}
+                    required={!ro}
+                  />
+                  <p className="text-muted-foreground self-center text-xs leading-relaxed">
+                    {t(
+                      "In production the ERP receipt posting (procedure step 5) is pulled from D365 and cross-checked against this document. Without a receipt the agent flags that acceptance is not evidenced.",
+                      "في بيئة الإنتاج يُجلب قيد الاستلام من داينمكس 365 (الخطوة ٥ من الإجراء) ويُطابق مع هذا المستند. وبدون إيصال يشير الوكيل إلى أن الاستلام غير مُثبت."
+                    )}
+                  </p>
+                </div>
+              )
+            ) : (
+              <UploadSlot
+                label={t("Certificate of Completion", "محضر الإنجاز")}
+                hint={stagedName("coc") ?? t("PDF — click to choose", "PDF — انقر للاختيار")}
+                file={cocFile}
+                onPick={setCocFile}
+                disabled={ro}
+                required={!ro}
+              />
+            )}
           </Section>
 
+          <div className="flex justify-end">
+            <Button size="lg" onClick={() => analyze(3)}>
+              <Sparkles />
+              {t("Run three-way match", "تشغيل المطابقة الثلاثية")}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {step === 3 && phase === "results" && (
+        <div className="mt-5 space-y-5">
+          <GateResults stepNo={3} />
+          <ResultActions />
+        </div>
+      )}
+
+      {/* ------------------------------------ step 4: final check (penalties) */}
+      {step === 4 && phase === "form" && (
+        <div className="mt-5 space-y-4">
+          <PenaltyTermsCard claim={claim} extracted={run?.extracted} />
           <Section
             title={t("Penalties on record", "الغرامات المسجلة على المورد")}
             desc={t(
-              "Project events the COC-consistency gate cross-checks against the Certificate of Completion.",
-              "وقائع المشروع التي تطابقها بوابة اتساق محضر الإنجاز مع المحضر."
+              "Project events the final check cross-checks against the acceptance document and the contract dates: declared delay vs. penalties, and delay inferred from the dates themselves.",
+              "وقائع المشروع التي يطابقها الفحص النهائي مع مستند الاستلام وتواريخ العقد: التأخير المصرّح به مقابل الغرامات، والتأخير المستنتج من التواريخ نفسها."
             )}
           >
             <div className="space-y-2">
@@ -863,8 +1153,15 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
                   )}
                 </div>
               ))}
-              {penalties.length === 0 && ro && (
-                <p className="text-muted-foreground text-sm">{t("No penalties on record.", "لا توجد غرامات مسجلة.")}</p>
+              {penalties.length === 0 && (
+                <p className="text-muted-foreground text-sm">
+                  {ro
+                    ? t("No penalties on record.", "لا توجد غرامات مسجلة.")
+                    : t(
+                        "No penalties entered — the agent still infers delay from the contract end date and the acceptance date.",
+                        "لم تُدخل غرامات — يستنتج الوكيل التأخير من تاريخ نهاية العقد وتاريخ الاستلام على أي حال."
+                      )}
+                </p>
               )}
               {!ro && (
                 <Button variant="outline" size="sm" onClick={() => setPenalties((rows) => [...rows, { reason_ar: "", amount: "", date: "" }])}>
@@ -875,80 +1172,15 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
             </div>
           </Section>
 
-          <div className="flex justify-end">
-            <Button size="lg" onClick={() => analyze(3)}>
-              <Sparkles />
-              {t("Check consistency", "فحص الاتساق")}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {step === 3 && phase === "results" && (
-        <div className="mt-5 space-y-5">
-          <GateResults stepNo={3} />
-          <ResultActions />
-        </div>
-      )}
-
-      {/* ------------------------------------------ step 4: three-way match */}
-      {step === 4 && phase === "form" && (
-        <div className="mt-5 space-y-4">
-          <Section
-            title={t("Three-way match (المطابقة الثلاثية)", "المطابقة الثلاثية")}
-            desc={t(
-              "Contract/BoQ ↔ ERP product receipt ↔ invoice: the agent verifies quantities are billed only for work actually received, within the contracted quantities — the receipt the procedure posts at step 5.",
-              "مطابقة ثلاثية بين العقد وإيصال استلام المنتجات والفاتورة: يتحقق الوكيل من أن الفوترة لما تم استلامه فعلاً وضمن الكميات التعاقدية — الإيصال الذي يسجله الإجراء في الخطوة ٥."
+          <div className="flex items-center justify-end gap-3">
+            {!fields.contract_end_date && !ro && (
+              <p className="text-muted-foreground text-xs">
+                {t("No contract end date (step 2) — delay inference will be skipped.", "لا يوجد تاريخ نهاية للعقد (الخطوة ٢) — سيُتجاوز استنتاج التأخير.")}
+              </p>
             )}
-          >
-            {claim?.documents.receipt ? (
-              <div>
-                <p className="text-sm font-medium">
-                  {t("Product receipt", "إيصال الاستلام")} {claim.documents.receipt.receipt_no}
-                  <span className="text-muted-foreground font-normal">
-                    {" — "}
-                    {claim.documents.receipt.receipt_date}
-                  </span>
-                </p>
-                <div className="border-border/70 mt-2 overflow-hidden rounded-md border">
-                  {claim.documents.receipt.lines.map((l) => (
-                    <div
-                      key={l.item_code}
-                      className="border-border/70 bg-muted/40 flex items-center gap-2 border-b px-2.5 py-1.5 text-xs last:border-0"
-                    >
-                      <span className="w-20 shrink-0 font-medium">{l.item_code}</span>
-                      <span className="text-muted-foreground min-w-0 flex-1 truncate" dir="auto">
-                        {l.description_ar}
-                      </span>
-                      <span className="tabular-nums">
-                        {t("qty", "الكمية")} {l.quantity}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2">
-                <UploadSlot
-                  label={t("Delivery note / receipt evidence", "إشعار التسليم / مستند الاستلام")}
-                  hint={stagedName("delivery_note") ?? t("PDF — click to choose", "PDF — انقر للاختيار")}
-                  file={deliveryFile}
-                  onPick={setDeliveryFile}
-                  disabled={ro}
-                />
-                <p className="text-muted-foreground self-center text-xs leading-relaxed">
-                  {t(
-                    "In production the product receipt is pulled from D365 (procedure step 5). No receipt on this claim — the agent will flag that the three-way match cannot be completed.",
-                    "في بيئة الإنتاج يُجلب إيصال الاستلام من داينمكس 365 (الخطوة ٥ من الإجراء). لا يوجد إيصال لهذه المطالبة — سيشير الوكيل إلى تعذر إتمام المطابقة الثلاثية."
-                  )}
-                </p>
-              </div>
-            )}
-          </Section>
-          <div className="flex justify-end">
             <Button size="lg" onClick={() => analyze(4)}>
               <Sparkles />
-              {t("Run three-way match", "تشغيل المطابقة الثلاثية")}
+              {t("Run final check", "تشغيل الفحص النهائي")}
             </Button>
           </div>
         </div>
@@ -964,35 +1196,132 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
       {/* --------------------------------------- step 5: pre-finance package */}
       {step === 5 && phase === "form" && (
         <div className="mt-5 space-y-4">
-          <Section
-            title={t("Attachments filed in the ERP", "المرفقات المسجلة في النظام")}
-            desc={t(
-              "The pre-finance gate checks this list for completeness before referral to Finance (procedure step 6).",
-              "تتحقق بوابة ما قبل المالية من اكتمال هذه القائمة قبل الإحالة للإدارة المالية (الخطوة ٦ من الإجراء)."
-            )}
-          >
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {ERP_ATTACHMENTS.map((a) => (
-                <label key={a.key} className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    className="accent-primary size-4"
-                    disabled={ro}
-                    checked={attachments.has(a.key)}
-                    onChange={(e) =>
-                      setAttachments((prev) => {
-                        const next = new Set(prev)
-                        if (e.target.checked) next.add(a.key)
-                        else next.delete(a.key)
-                        return next
-                      })
-                    }
-                  />
-                  {pick(a.en, a.ar)}
-                </label>
-              ))}
-            </div>
-          </Section>
+          {ro ? (
+            <Section
+              title={t("Attachments filed in the ERP", "المرفقات المسجلة في النظام")}
+              desc={t(
+                "The pre-finance gate checks this list for completeness before referral to Finance (procedure step 6).",
+                "تتحقق بوابة ما قبل المالية من اكتمال هذه القائمة قبل الإحالة للإدارة المالية (الخطوة ٦ من الإجراء)."
+              )}
+            >
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {REQUIRED_ATTACHMENTS.map((a) => {
+                  const have = (existing?.documents.attachments ?? []).some(
+                    (x) => x.trim().toLowerCase() === a.key
+                  )
+                  return (
+                    <div key={a.key} className="flex items-center gap-2 text-sm">
+                      {have ? (
+                        <Check className="text-ok size-4 shrink-0" />
+                      ) : (
+                        <X className="text-destructive size-4 shrink-0" />
+                      )}
+                      {pick(a.en, a.ar)}
+                    </div>
+                  )
+                })}
+              </div>
+            </Section>
+          ) : (
+            <Section
+              title={t("Vendor file — required documents", "ملف المورد — المستندات المطلوبة")}
+              desc={t(
+                "Upload the vendor file; the agent identifies each document and reads its identity fields (CR number, VAT number, validity). The gate verifies what the agent actually saw — not a checkbox (procedure step 6).",
+                "ارفع ملف المورد؛ يتعرف الوكيل على كل مستند ويقرأ حقول هويته (رقم السجل، الرقم الضريبي، الصلاحية). تتحقق البوابة مما رآه الوكيل فعلاً — لا من قائمة اختيارات (الخطوة ٦ من الإجراء)."
+              )}
+            >
+              <label
+                className={cn(
+                  "flex items-center gap-3 rounded-lg border border-dashed border-border p-3",
+                  attachExtracting ? "opacity-80" : "hover:bg-muted/50 cursor-pointer"
+                )}
+              >
+                {attachExtracting ? (
+                  <Loader2 className="text-primary size-4 shrink-0 animate-spin" />
+                ) : (
+                  <Upload className="text-muted-foreground size-4 shrink-0" />
+                )}
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium">
+                    {t("Upload the vendor file documents", "رفع مستندات ملف المورد")}
+                    <span className="text-destructive"> *</span>
+                  </span>
+                  <span className="text-muted-foreground block text-xs">
+                    {attachExtracting
+                      ? t("Identifying documents…", "جارٍ التعرف على المستندات…")
+                      : t(
+                          "Award letter, work commencement minutes, CR, zakat & GOSI certificates — multiple files",
+                          "خطاب الترسية، محضر البدء، السجل التجاري، شهادتا الزكاة والتأمينات — عدة ملفات"
+                        )}
+                  </span>
+                </span>
+                <input
+                  type="file"
+                  multiple
+                  className="hidden"
+                  accept=".pdf,.docx,.png,.jpg,.jpeg"
+                  onChange={(e) => {
+                    onPickAttachments(e.target.files)
+                    e.target.value = ""
+                  }}
+                />
+              </label>
+
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                {REQUIRED_ATTACHMENTS.map((a) => {
+                  const fromStep2 = (a.key === "contract" || a.key === "boq") && hasContractBoq
+                  const det = attachDetections.find((d) => d.doc_key === a.key)
+                  const covered = fromStep2 || !!det
+                  const ident = det && (det.fields.reference_no || det.fields.cr_number || det.fields.vat_number)
+                  return (
+                    <div
+                      key={a.key}
+                      className={cn(
+                        "flex items-center gap-2.5 rounded-lg border p-2.5 text-sm",
+                        covered ? "border-ok/30 bg-ok/5" : "border-dashed border-border"
+                      )}
+                    >
+                      {covered ? (
+                        <Check className="text-ok size-4 shrink-0" />
+                      ) : (
+                        <CircleDashed className="text-muted-foreground/60 size-4 shrink-0" />
+                      )}
+                      <span className="min-w-0 flex-1">
+                        <span className="block font-medium">{pick(a.en, a.ar)}</span>
+                        <span className="text-muted-foreground block truncate text-xs" dir="auto">
+                          {fromStep2
+                            ? t("Covered by the contract & BoQ document (step 2)", "مشمول بمستند العقد وجدول الكميات (الخطوة ٢)")
+                            : det
+                              ? det.file_name +
+                                (ident ? ` — ${ident}` : "") +
+                                (det.fields.expiry_date ? ` · ${t("valid until", "صالحة حتى")} ${det.fields.expiry_date}` : "")
+                              : t("Awaiting upload", "بانتظار الرفع")}
+                        </span>
+                      </span>
+                      {det && !fromStep2 && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          aria-label={t("Remove document", "إزالة المستند")}
+                          onClick={() => removeAttachment(det.file_name)}
+                        >
+                          <Trash2 />
+                        </Button>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+              {unrecognized.length > 0 && (
+                <p className="text-warn mt-2 text-xs">
+                  {t(
+                    `Couldn't identify: ${unrecognized.map((d) => d.file_name).join(", ")} — filed as "other".`,
+                    `تعذر التعرف على: ${unrecognized.map((d) => d.file_name).join("، ")} — ستُسجل ضمن "أخرى".`
+                  )}
+                </p>
+              )}
+            </Section>
+          )}
 
           <Section
             title={t("Remaining documents", "المستندات المتبقية")}
@@ -1026,8 +1355,16 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
             </div>
           </Section>
 
-          <div className="flex justify-end">
-            <Button size="lg" onClick={() => analyze(5)}>
+          <div className="flex items-center justify-end gap-3">
+            {!ro && missingDocs.length > 0 && (
+              <p className="text-muted-foreground text-xs">
+                {t(
+                  `${missingDocs.length} required document(s) still missing.`,
+                  `${missingDocs.length} مستند/مستندات مطلوبة لم تُرفع بعد.`
+                )}
+              </p>
+            )}
+            <Button size="lg" onClick={() => analyze(5)} disabled={!ro && (attachExtracting || missingDocs.length > 0)}>
               <Sparkles />
               {t("Run final checks", "الفحوصات النهائية")}
             </Button>
@@ -1038,6 +1375,7 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
       {step === 5 && phase === "results" && (
         <div className="mt-5 space-y-5">
           <GateResults stepNo={5} />
+          {detectedForCards.length > 0 && <AttachmentCards detected={detectedForCards} claim={claim} />}
           <ResultActions last />
         </div>
       )}
@@ -1094,13 +1432,24 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
             })}
           </div>
 
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            <Button variant="outline" asChild>
-              <Link to="/">{t("Back to claims", "العودة للمطالبات")}</Link>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            {/* Hand-off pack: the documents the gates matched (invoice, contract/
+                BoQ, acceptance), named by claim id. Compliance attachments
+                (CR, GOSI…) are deliberately left out. */}
+            <Button variant="outline" asChild disabled={!hasExportDocs}>
+              <a href={hasExportDocs ? exportUrl(claim.id) : undefined} download aria-disabled={!hasExportDocs}>
+                <Download />
+                {t("Export matching documents", "تصدير مستندات المطابقة")}
+              </a>
             </Button>
-            <Button variant="outline" onClick={reset}>
-              {t("Review another claim", "فحص مطالبة أخرى")}
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="outline" asChild>
+                <Link to="/">{t("Back to claims", "العودة للمطالبات")}</Link>
+              </Button>
+              <Button variant="outline" onClick={reset}>
+                {t("Review another claim", "مراجعة مطالبة أخرى")}
+              </Button>
+            </div>
           </div>
         </div>
       )}
@@ -1120,7 +1469,7 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
             <div className="flex items-start justify-between gap-3">
               <h2 className="flex items-center gap-2 text-sm font-semibold">
                 <Database className="text-muted-foreground size-4" />
-                {t("Microsoft Dynamics 365 import", "الاستيراد من مايكروسوفت داينمكس 365")}
+                {t("Microsoft Dynamics 365 import", "الاستيراد من Microsoft Dynamics 365")}
               </h2>
               <button
                 type="button"

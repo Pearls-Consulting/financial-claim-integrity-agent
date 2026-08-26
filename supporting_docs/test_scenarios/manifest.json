@@ -51,7 +51,7 @@
     "vendor_en": "Al-Waha Office Supplies Co.",
     "vendor_ar": "شركة الواحة لتجهيزات المكاتب",
     "vat_number": "310987654300003",
-    "total": 149500.0
+    "total": 230000.0
   },
   "demo-vendor/Invoice-Alwaha-INV-2026-0342_tampered.pdf": {
     "fixture": "tampered",
@@ -60,6 +60,6 @@
     "vendor_en": "Al-Waha Office Supplies Co.",
     "vendor_ar": "شركة الواحة لتجهيزات المكاتب",
     "vat_number": "310987654300003",
-    "total": 149500.0
+    "total": 230000.0
   }
 }

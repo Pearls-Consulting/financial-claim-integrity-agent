@@ -1,24 +1,44 @@
-import { BrowserRouter, Link, Route, Routes } from "react-router-dom"
+import { startTransition } from "react"
+import { BrowserRouter, Link, Navigate, Outlet, Route, Routes, useNavigate } from "react-router-dom"
 import { LogOut } from "lucide-react"
 
 import sdbLogo from "@/assets/sdb-logo.svg"
 import { LangToggle } from "@/components/LangToggle"
 import { PdfViewerProvider } from "@/components/PdfViewerContext"
 import { PdfViewerPanel } from "@/components/PdfViewerPanel"
+import { ProtectedRoute } from "@/components/ProtectedRoute"
+import { AuthProvider, useAuth } from "@/lib/auth-context"
 import { LanguageProvider, useLang } from "@/lib/i18n"
 import { ClaimsListPage } from "@/pages/ClaimsListPage"
+import { LoginPage } from "@/pages/LoginPage"
 import { ClaimDetailPage, SubmitClaimPage } from "@/pages/ReviewWizard"
 
 /** Signed-in identity + sign-out, mirroring the prequalification header.
- *  Demo build has no auth — the identity is the procedure's step-1 actor
- *  (SP-01-04-05-02: أخصائي إدارة الموردين) and sign-out is decorative. */
+ *  Single role: the procedure's step-1 actor (SP-01-04-05-02: أخصائي إدارة
+ *  الموردين) — the name comes from the session, the unit is fixed. */
 function UserBadge() {
   const { t } = useLang()
+  const { user, signOut } = useAuth()
+  const navigate = useNavigate()
+
+  if (!user) return null
+
+  function onSignOut() {
+    // React Router runs navigate() as a transition; the auth-state clear must
+    // sit in the same transition or it renders first — anon with the guard
+    // still mounted on this page — and the guard's /login?next=… wins over
+    // our /login. One transition = one render with both applied.
+    startTransition(() => {
+      navigate("/login", { replace: true })
+      void signOut()
+    })
+  }
+
   return (
     <div className="flex shrink-0 items-center gap-3">
       <div className="hidden max-w-[14rem] text-end leading-tight lg:block">
         <div className="text-foreground truncate text-sm font-medium">
-          {t("Vendor Management Specialist", "أخصائي إدارة الموردين")}
+          {t(user.displayName, user.displayNameAr || user.displayName)}
         </div>
         <div className="text-muted-foreground truncate text-xs">
           {t("Planning & Vendor Management", "إدارة التخطيط وإدارة الموردين")}
@@ -26,6 +46,7 @@ function UserBadge() {
       </div>
       <button
         type="button"
+        onClick={onSignOut}
         title={t("Sign out", "تسجيل الخروج")}
         aria-label={t("Sign out", "تسجيل الخروج")}
         className="border-border bg-card text-muted-foreground hover:text-foreground grid size-9 shrink-0 place-items-center rounded-full border transition"
@@ -72,16 +93,13 @@ function AppHeader() {
   )
 }
 
+/** The signed-in layout: header, page outlet, and the side PDF viewer. */
 function Shell() {
   return (
     <div className="flex min-h-svh flex-col">
       <AppHeader />
       <main className="mx-auto w-full max-w-6xl flex-1 px-6 pb-16 pt-6">
-        <Routes>
-          <Route path="/" element={<ClaimsListPage />} />
-          <Route path="/claims/:id" element={<ClaimDetailPage />} />
-          <Route path="/submit" element={<SubmitClaimPage />} />
-        </Routes>
+        <Outlet />
       </main>
       <PdfViewerPanel />
     </div>
@@ -91,11 +109,26 @@ function Shell() {
 export default function App() {
   return (
     <LanguageProvider>
-      <PdfViewerProvider>
-        <BrowserRouter>
-          <Shell />
-        </BrowserRouter>
-      </PdfViewerProvider>
+      <AuthProvider>
+        <PdfViewerProvider>
+          <BrowserRouter>
+            <Routes>
+              {/* Public */}
+              <Route path="/login" element={<LoginPage />} />
+
+              {/* Everything else needs a session */}
+              <Route element={<ProtectedRoute />}>
+                <Route element={<Shell />}>
+                  <Route path="/" element={<ClaimsListPage />} />
+                  <Route path="/claims/:id" element={<ClaimDetailPage />} />
+                  <Route path="/submit" element={<SubmitClaimPage />} />
+                  <Route path="*" element={<Navigate to="/" replace />} />
+                </Route>
+              </Route>
+            </Routes>
+          </BrowserRouter>
+        </PdfViewerProvider>
+      </AuthProvider>
     </LanguageProvider>
   )
 }

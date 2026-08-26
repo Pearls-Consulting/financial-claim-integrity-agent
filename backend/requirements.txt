@@ -33,6 +33,11 @@ numpy>=1.26
 # verification over the invoice hash, secp256k1
 cryptography>=42.0
 
+# Session auth - same method as the prequalification agent: stateless HS256
+# JWT in an httpOnly cookie (PyJWT), bcrypt for the configured login password.
+PyJWT>=2.9
+bcrypt>=4.2
+
 # --- wired later ---
 # anthropic>=0.92        # Claude extractor/judge engines
 # sqlalchemy>=2.0        # persistence once the demo outgrows in-memory

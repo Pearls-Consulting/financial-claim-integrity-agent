@@ -5,9 +5,10 @@ import uuid
 import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
+from app.api.deps import require_session
 from app.core.config import get_settings
 from pydantic import BaseModel
 
@@ -19,7 +20,9 @@ from app.services.datasource import get_source
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
-router = APIRouter(prefix="/api")
+# Every claim/document endpoint requires a signed-in session (httpOnly cookie,
+# see app/api/deps.py). /health and /api/auth/* live outside this router.
+router = APIRouter(prefix="/api", dependencies=[Depends(require_session)])
 
 
 def _find_claim(claim_id: str) -> Claim | None:

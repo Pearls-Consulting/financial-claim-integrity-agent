@@ -194,7 +194,7 @@ delivered 80 vs billed 120 → three-way over-billing, claimed 200,000 vs
 | Contract value (base) | The ceiling every progress payment is checked against — **stated excl. VAT, same basis as BoQ line prices** (a deliberate convention; whether SDB contracts state it incl. or excl. VAT is a POC-P01 question we've logged). |
 | Claim (incl. VAT) | What the vendor actually asks to be paid — the figure Finance disburses. |
 | Review status | Persisted server-side; a closed tab resumes exactly where the review stood. |
-| Header: role badge "Vendor Management Specialist / أخصائي إدارة الموردين" | The procedure's step-1 actor (SP-01-04-05-02). Demo build has no auth — the badge shows where roles attach later (deliberately deferred: see pain point 2). |
+| Header: role badge "Vendor Management Specialist / أخصائي إدارة الموردين" | The procedure's step-1 actor (SP-01-04-05-02). Single-role login (email + password from `AUTH_EMAIL` / `AUTH_PASSWORD`, httpOnly cookie session — same method as the prequal agent); the badge shows the signed-in name and the sign-out button ends the session. Multi-role attaches later (deliberately deferred: see pain point 2). |
 
 ### Wizard step 1 — Tax invoice
 

@@ -24,6 +24,22 @@ class Settings(BaseSettings):
     azure_cu_analyzer: str = "prebuilt-layout"
     azure_cu_api_version: str = "2025-11-01"
 
+    # --- auth / session ---------------------------------------------------
+    # Single-role demo login (the vendor-management specialist who reviews
+    # claims). One account, configured here rather than in a users table -
+    # the prequalification agent's multi-role admin/user CRUD is deliberately
+    # not carried over. Session mechanics are identical to that agent:
+    # stateless HS256 JWT in an httpOnly cookie, sliding idle window.
+    auth_email: str = "reviewer@sdb.local"
+    auth_name: str = "Vendor Management Specialist"
+    auth_name_ar: str = "أخصائي إدارة الموردين"
+    auth_password: str = ""  # blank = login disabled (every attempt is 401)
+    jwt_secret: str = "dev-insecure-change-me-set-a-real-secret-in-production"
+    session_cookie_name: str = "cia_session"
+    session_idle_hours: int = 168  # 7 days, sliding
+    session_absolute_hours: int = 720  # 30 days from login; 0 = no cap
+    cookie_secure: bool = False  # True behind HTTPS in production
+
 
 @lru_cache
 def get_settings() -> Settings:

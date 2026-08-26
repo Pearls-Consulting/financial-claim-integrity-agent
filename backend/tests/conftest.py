@@ -23,3 +23,20 @@ def _isolated_store(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "DB_PATH", tmp_path / "claims.db")
     monkeypatch.setattr(store, "_conn", None)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _signed_in(request):
+    """Every /api endpoint requires a session cookie. Pipeline/extraction tests
+    are about the gates, not the login, so the session dependency is overridden
+    with the configured user. Tests marked `real_auth` (tests/test_auth.py)
+    exercise the real cookie flow instead."""
+    if request.node.get_closest_marker("real_auth"):
+        yield
+        return
+    from app.api.deps import configured_user, require_session
+    from app.main import app
+
+    app.dependency_overrides[require_session] = configured_user
+    yield
+    app.dependency_overrides.pop(require_session, None)

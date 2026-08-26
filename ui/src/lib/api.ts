@@ -1,8 +1,19 @@
+import { emitUnauthorized } from "@/lib/auth-bus"
 import type { Claim, ContractExtract, DetectedAttachment, InvoiceDoc, RunResult, Stage } from "@/types/domain"
+
+/** Build the error for a failed response. A 401 means the session cookie is
+ *  gone/invalid — tell the auth layer so ProtectedRoute bounces to /login.
+ *  Every call in this module fails through here, so one hook covers them all
+ *  (the auth bootstrap/login flows in auth-api.ts use plain fetch instead). */
+async function failure(res: Response, label: string, withBody = false): Promise<Error> {
+  if (res.status === 401) emitUnauthorized()
+  const body = withBody ? ` ${await res.text()}` : ""
+  return new Error(`${label}: ${res.status}${body}`)
+}
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path)
-  if (!res.ok) throw new Error(`${path}: ${res.status}`)
+  if (!res.ok) throw await failure(res, path)
   return res.json() as Promise<T>
 }
 
@@ -15,12 +26,12 @@ export const api = {
   run: async (id: string, gates?: string[]): Promise<RunResult> => {
     const qs = gates?.length ? `?gates=${gates.join(",")}` : ""
     const res = await fetch(`/api/claims/${id}/run${qs}`, { method: "POST" })
-    if (!res.ok) throw new Error(`run ${id}: ${res.status}`)
+    if (!res.ok) throw await failure(res, `run ${id}`)
     return res.json() as Promise<RunResult>
   },
   submit: async (form: FormData): Promise<Claim> => {
     const res = await fetch("/api/submissions", { method: "POST", body: form })
-    if (!res.ok) throw new Error(`submit: ${res.status} ${await res.text()}`)
+    if (!res.ok) throw await failure(res, `submit`, true)
     return res.json() as Promise<Claim>
   },
   /** Persist the wizard position so a closed tab resumes where it left off. */
@@ -34,7 +45,7 @@ export const api = {
     const fd = new FormData()
     fd.append("invoice", file)
     const res = await fetch("/api/extract/invoice", { method: "POST", body: fd })
-    if (!res.ok) throw new Error(`extract: ${res.status} ${await res.text()}`)
+    if (!res.ok) throw await failure(res, `extract`, true)
     return res.json() as Promise<InvoiceDoc | null>
   },
   /** OCR + structure one contract/BoQ for the step-2 suggestions (contract
@@ -43,7 +54,7 @@ export const api = {
     const fd = new FormData()
     fd.append("contract_boq", file)
     const res = await fetch("/api/extract/boq", { method: "POST", body: fd })
-    if (!res.ok) throw new Error(`extract: ${res.status} ${await res.text()}`)
+    if (!res.ok) throw await failure(res, `extract`, true)
     return res.json() as Promise<ContractExtract | null>
   },
   /** Identify uploaded vendor-file documents (CR, zakat, award letter, ...)
@@ -52,13 +63,13 @@ export const api = {
     const fd = new FormData()
     for (const f of files) fd.append("files", f)
     const res = await fetch("/api/extract/attachments", { method: "POST", body: fd })
-    if (!res.ok) throw new Error(`extract: ${res.status} ${await res.text()}`)
+    if (!res.ok) throw await failure(res, `extract`, true)
     return res.json() as Promise<DetectedAttachment[]>
   },
   /** Attach later-step documents / ERP context to an existing submission. */
   update: async (id: string, form: FormData): Promise<Claim> => {
     const res = await fetch(`/api/submissions/${id}`, { method: "POST", body: form })
-    if (!res.ok) throw new Error(`update ${id}: ${res.status} ${await res.text()}`)
+    if (!res.ok) throw await failure(res, `update ${id}`, true)
     return res.json() as Promise<Claim>
   },
 }
@@ -95,7 +106,10 @@ export async function locateInDocument(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ page, values, anchors }),
     })
-    if (!res.ok) return { found: false, polygons: [] }
+    if (!res.ok) {
+      if (res.status === 401) emitUnauthorized()
+      return { found: false, polygons: [] }
+    }
     return (await res.json()) as LocateResult
   } catch {
     return { found: false, polygons: [] }

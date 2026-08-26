@@ -80,7 +80,7 @@ Two ways to show the same pipeline (client demo):
 | QR bitmap extraction from PDFs | `backend/app/services/qr_extraction.py` (pypdfium2 + zxing-cpp) |
 | LLM judge over precomputed findings | `backend/app/services/judge/` |
 | Background jobs + progress polling | `backend/app/jobs/queue.py`, `services/progress.py` |
-| Auth/roles, audit log | `backend/app/services/auth`, `services/audit.py` |
+| Auth (cookie session JWT + bcrypt; single role here, no user table) | `backend/app/core/security.py`, `api/deps.py`, `api/routes/auth.py`, `ui/src/pages/LoginPage.tsx`, `lib/auth-*` — ported as `app/core/security.py`, `app/api/{deps,auth}.py`, `ui/src/lib/auth-*`, `pages/LoginPage.tsx` |
 | PDF evidence viewer, upload progress | `ui/src/components/PdfViewerPanel.tsx`, `UploadProgressBar.tsx` |
 | Bilingual/RTL layer, theme, buttons | `ui/src/lib/i18n.tsx`, `components/theme-provider.tsx`, `components/ui/` |
 

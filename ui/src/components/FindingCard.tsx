@@ -2,6 +2,7 @@ import { FileSearch } from "lucide-react"
 
 import { StatusPill } from "@/components/StatusPill"
 import { usePdfViewer } from "@/components/PdfViewerContext"
+import { docIndexFor } from "@/lib/evidence"
 import { useLang } from "@/lib/i18n"
 import type { Claim, ClaimDocuments, Finding } from "@/types/domain"
 
@@ -151,26 +152,35 @@ const EVIDENCE_LABELS: Record<string, { en: string; ar: string }> = {
 
 const HIDDEN_LEAVES = /(^|\.)(bidi_normalized|has_zatca_stamp|status)$/
 
-/** The page the extractor read a leaf's value from: a line-level leaf (a
- *  BoQ / invoice / receipt row identified by its item code) cites the row's
- *  page; anything else cites the document header's page. 0 = unknown. */
-function pageFor(docType: string | null, leaf: Leaf, extracted?: ClaimDocuments | null): number {
-  if (!docType || !extracted) return 0
+/** Where the extractor read a leaf's value: a line-level leaf (a BoQ /
+ *  invoice / receipt row identified by its item code) cites the row's page
+ *  and file; anything else cites the document header's. page 0 = unknown. */
+function locationFor(
+  docType: string | null,
+  leaf: Leaf,
+  extracted?: ClaimDocuments | null
+): { page: number; source_file?: string } {
+  if (!docType || !extracted) return { page: 0 }
   const item = leaf.siblings["item"] ?? leaf.siblings["item_code"]
   const code = typeof item === "string" || typeof item === "number" ? String(item) : ""
-  const rowPage = <T extends { item_code: string; page?: number }>(rows: T[] | undefined): number =>
-    (code && rows?.find((r) => r.item_code === code)?.page) || 0
+  type Row = { item_code: string; page?: number; source_file?: string }
+  type Header = { page?: number; source_file?: string } | null | undefined
+  const loc = (rows: Row[] | undefined, header: Header) => {
+    const row = code ? rows?.find((r) => r.item_code === code) : undefined
+    const src = row ?? header
+    return { page: src?.page || 0, source_file: src?.source_file || undefined }
+  }
   switch (docType) {
     case "invoice":
-      return rowPage(extracted.invoice?.lines) || extracted.invoice?.page || 0
+      return loc(extracted.invoice?.lines, extracted.invoice)
     case "contract_boq":
-      return rowPage(extracted.boq) || extracted.contract?.page || 0
+      return loc(extracted.boq, extracted.contract)
     case "coc":
-      return extracted.coc?.page || 0
+      return loc(undefined, extracted.coc)
     case "delivery_note":
-      return rowPage(extracted.receipt?.lines) || extracted.receipt?.page || 0
+      return loc(extracted.receipt?.lines, extracted.receipt)
     default:
-      return 0
+      return { page: 0 }
   }
 }
 
@@ -205,7 +215,15 @@ export function FindingCard({
   const locate = (leaf: Leaf) => {
     if (!claim) return
     const docType = targetDocType(finding.gate, leaf.path)
-    const index = claim.source_files.findIndex((f) => f.doc_type === docType)
+    const isPenalty = leaf.path.join(".").includes("contract_penalty")
+    const penaltyTerm = isPenalty
+      ? (extracted?.contract?.penalty_terms ?? []).find(
+          (pt) => pt.ref === leaf.siblings["clause_ref"] || pt.rate_percent === leaf.siblings["rate_percent"]
+        )
+      : undefined
+    const where = locationFor(docType, leaf, extracted)
+    // Several files may be staged for a doc type — open the one the value was read from.
+    const index = docIndexFor(claim, penaltyTerm?.source_file ?? where.source_file, docType ? [docType] : [])
     if (index === -1) return
     const file = claim.source_files[index]
     // The row's item/identifier sibling is marked too, so a unit price lands
@@ -217,19 +235,14 @@ export function FindingCard({
     // Percent leaves highlight the printed form ("10%"); a penalty-clause leaf
     // also carries its page + verbatim clause so the scanned contract's
     // OCR-locate lands straight on the clause.
-    const isPenaltyLeaf = leaf.path.join(".").includes("contract_penalty")
     const key = leaf.path[leaf.path.length - 1] ?? ""
     const highlight = key.endsWith("_percent") ? `${leaf.value}%` : String(leaf.value)
-    const term = isPenaltyLeaf
-      ? (extracted?.contract?.penalty_terms ?? []).find(
-          (pt) => pt.ref === leaf.siblings["clause_ref"] || pt.rate_percent === leaf.siblings["rate_percent"]
-        )
-      : undefined
+    const term = penaltyTerm
     openDocument({
       claimId: claim.id,
       index,
       fileName: file.path.split("/").pop(),
-      page: term?.page || pageFor(docType, leaf, extracted) || undefined,
+      page: term?.page || where.page || undefined,
       highlight,
       highlightAlso: also,
       highlightExtra: term?.text_ar || undefined,

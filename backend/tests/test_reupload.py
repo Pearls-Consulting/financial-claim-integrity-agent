@@ -53,6 +53,21 @@ def test_reupload_replaces_slot_and_stale_file(monkeypatch):
     assert _files(updated, "coc") == []
     assert len(_files(updated, "delivery_note")) == 1
 
+    # Step 2 takes a SET of contract/BoQ files (contract + BoQ + appendix),
+    # fused by the extractor; a later set replaces the whole previous set.
+    updated = client.post(
+        f"/api/submissions/{cid}",
+        files=[
+            ("contract_boq", ("contract.pdf", b"c", "application/pdf")),
+            ("contract_boq", ("boq.pdf", b"q", "application/pdf")),
+        ],
+    ).json()
+    assert sorted(p.rsplit("/", 1)[-1] for p in _files(updated, "contract_boq")) == ["boq.pdf", "contract.pdf"]
+    updated = client.post(
+        f"/api/submissions/{cid}", files={"contract_boq": ("combined.pdf", b"x", "application/pdf")}
+    ).json()
+    assert [p.rsplit("/", 1)[-1] for p in _files(updated, "contract_boq")] == ["combined.pdf"]
+
     # Step 5: "other" uploads replace, not accumulate.
     client.post(f"/api/submissions/{cid}", files=[("other", ("o1.pdf", b"1", "application/pdf"))])
     updated = client.post(
@@ -62,7 +77,7 @@ def test_reupload_replaces_slot_and_stale_file(monkeypatch):
 
     # Only the live files remain on disk.
     names = sorted(p.name for p in (upload_dir / cid).iterdir())
-    assert names == ["boq_b.pdf", "dn.pdf", "inv_v2.pdf", "o2.pdf"]
+    assert names == ["combined.pdf", "dn.pdf", "inv_v2.pdf", "o2.pdf"]
     shutil.rmtree(upload_dir.parent, ignore_errors=True)
 
 

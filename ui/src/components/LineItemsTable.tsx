@@ -1,6 +1,7 @@
 import { FileSearch } from "lucide-react"
 
 import { usePdfViewer } from "@/components/PdfViewerContext"
+import { docIndexFor } from "@/lib/evidence"
 import { useLang } from "@/lib/i18n"
 import { cn, formatMoney } from "@/lib/utils"
 import type { BoqLine, Claim, InvoiceDoc, InvoiceLine } from "@/types/domain"
@@ -57,13 +58,14 @@ export function LineItemsTable({
   const billed = rows.filter((r) => r.inv).length
   const unbilled = rows.filter((r) => r.boq && !r.inv).length
 
-  const docIndex = (docType: "contract_boq" | "invoice"): number =>
-    claim?.source_files.findIndex((f) => f.doc_type === docType) ?? -1
+  const docIndex = (docType: "contract_boq" | "invoice", sourceFile?: string): number =>
+    docIndexFor(claim, sourceFile, [docType])
 
   const locate = (side: "boq" | "inv", r: Row) => {
     if (!claim) return
     const docType = side === "boq" ? "contract_boq" : "invoice"
-    const index = docIndex(docType)
+    // Several contract/BoQ files may be staged — open the one this row was read from.
+    const index = docIndex(docType, side === "boq" ? r.boq!.source_file : r.inv!.source_file)
     if (index === -1) return
     const qty = side === "boq" ? r.boq!.quantity : r.inv!.quantity
     const price = side === "boq" ? r.boq!.unit_price : r.inv!.unit_price

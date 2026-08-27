@@ -763,7 +763,7 @@ def _dedupe(items: list[Any]) -> list[Any]:
     seen: set[str] = set()
     out: list[Any] = []
     for it in items:
-        key = json.dumps({k: v for k, v in it.items() if k != "page"}, sort_keys=True, ensure_ascii=False) if isinstance(it, dict) else json.dumps(it, ensure_ascii=False)
+        key = json.dumps({k: v for k, v in it.items() if k not in ("page", "source_file")}, sort_keys=True, ensure_ascii=False) if isinstance(it, dict) else json.dumps(it, ensure_ascii=False)
         if key in seen:
             continue
         seen.add(key)
@@ -821,7 +821,7 @@ _DIGIT_RUN = re.compile(r"\d+")
 # Free-text fields: wording (and the digits inside a description like
 # "120*120", or a clause ref read RTL as ٣.٣.١ / ١.٣.٣) legitimately varies
 # between two correct reads. Never part of the agreement signature.
-_TEXT_KEYS = {"description_ar", "description_en", "text_ar", "basis", "seller_name_ar", "ref", "kind", "per", "unit"}
+_TEXT_KEYS = {"description_ar", "description_en", "text_ar", "basis", "seller_name_ar", "ref", "kind", "per", "unit", "source_file"}
 
 
 def _sig(obj: Any) -> Any:
@@ -1003,6 +1003,30 @@ def readable_by_vision(path: Path) -> bool:
     return path.suffix.lower() in _RASTER_EXTS or path.suffix.lower() == ".pdf"
 
 
+def stamp_source(docs: dict[str, Any], file_name: str) -> dict[str, Any]:
+    """Name the file every document header, line and clause was read from.
+    A claim may carry the contract, the BoQ and appendices as SEPARATE files
+    that the extractor fuses into one ClaimDocuments; the evidence viewer
+    needs the file (and the page) to open the right one."""
+
+    def walk(o: Any) -> None:
+        if isinstance(o, dict):
+            if ("page" in o or "item_code" in o) and not o.get("source_file"):
+                o["source_file"] = file_name
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for x in o:
+                walk(x)
+
+    for section in ("invoice", "coc", "receipt", "contract"):
+        sec = docs.get(section)
+        if isinstance(sec, dict) and not sec.get("source_file"):
+            sec["source_file"] = file_name
+    walk(docs)
+    return docs
+
+
 def read_via_cu(path: Path, doc_type: str) -> dict[str, Any]:
     """Files the vision reader cannot rasterize (.docx and friends — the
     wizard accepts them) go through the earlier CU OCR + GPT structuring
@@ -1015,7 +1039,7 @@ def read_via_cu(path: Path, doc_type: str) -> dict[str, Any]:
     if not result.ok:
         raise RuntimeError(f"{path.name}: {result.error}")
     docs = structure_documents([(path.name, doc_type, result.markdown)])
-    return {"docs": docs.model_dump(), "anchors": {}}
+    return {"docs": stamp_source(docs.model_dump(), path.name), "anchors": {}}
 
 
 def read_file(path: Path, doc_type: str, *, max_pages: int | None = None, client: Any | None = None) -> dict[str, Any]:
@@ -1025,7 +1049,7 @@ def read_file(path: Path, doc_type: str, *, max_pages: int | None = None, client
     cache = _file_cache_key(path, path.read_bytes(), max_pages=max_pages)
     cached = _load_cache(cache)
     if cached is not None:
-        return cached
+        return stamp_source(cached, path.name)
     s = get_settings()
     units = build_units(path, doc_type, chunk_pages=s.gpt_vision_chunk_pages, max_pages=max_pages)
     reads = _read_units(units, client or make_client())
@@ -1033,7 +1057,7 @@ def read_file(path: Path, doc_type: str, *, max_pages: int | None = None, client
         raise RuntimeError(f"GPT reader: {path.name} could not be read completely")
     merged = merge_reads([r for r in reads if r])
     _store_cache(cache, merged)
-    return merged
+    return stamp_source(merged, path.name)
 
 
 def read_files(files: list[tuple[Path, str]]) -> list[dict[str, Any] | None]:
@@ -1057,7 +1081,7 @@ def read_files(files: list[tuple[Path, str]]) -> list[dict[str, Any] | None]:
             continue
         cached = _load_cache(_file_cache_key(path, path.read_bytes(), max_pages=None))
         if cached is not None:
-            results[i] = cached
+            results[i] = stamp_source(cached, path.name)
             continue
         try:
             pending.append((i, path, build_units(path, doc_type, chunk_pages=s.gpt_vision_chunk_pages)))
@@ -1075,8 +1099,8 @@ def read_files(files: list[tuple[Path, str]]) -> list[dict[str, Any] | None]:
         if any(r is None for r in file_reads):
             continue  # a missing chunk would silently drop lines — treat the file as unread
         merged = merge_reads([r for r in file_reads if r])
-        results[i] = merged
         _store_cache(_file_cache_key(path, path.read_bytes(), max_pages=None), merged)
+        results[i] = stamp_source(merged, path.name)
     return results
 
 

@@ -255,6 +255,21 @@ def test_contract_value_incl_vat_never_becomes_the_base():
     assert out["docs"]["contract"]["value_base"] == 620000.0  # nothing to compare against
 
 
+def test_fused_files_keep_their_source_file_on_every_value():
+    """Contract in one file, BoQ in another: after the merge each header,
+    line and clause still names the file (and page) it was read from."""
+    contract = gv.stamp_source(_read(contract={"contract_no": "K", "page": 5, "penalty_terms": [{"rate_percent": 10.0, "page": 37}]})["docs"], "Contract.pdf")
+    boq = gv.stamp_source(_read(boq=[{"item_code": "9.10", "description_ar": "x", "unit_price": 180, "quantity": 1, "page": 3}])["docs"], "BoQ.pdf")
+    m = gv.merge_reads([{"docs": contract, "anchors": {}}, {"docs": boq, "anchors": {}}])["docs"]
+    assert m["contract"]["source_file"] == "Contract.pdf" and m["contract"]["penalty_terms"][0]["source_file"] == "Contract.pdf"
+    assert m["boq"][0] == {**m["boq"][0], "source_file": "BoQ.pdf", "page": 3}
+    docs = ClaimDocuments.model_validate(m)
+    assert docs.boq[0].source_file == "BoQ.pdf" and docs.contract.penalty_terms[0].source_file == "Contract.pdf"
+    # the same row read from two files (a BoQ appendix repeated) is still one row
+    again = gv.stamp_source(_read(boq=[{"item_code": "9.10", "description_ar": "x", "unit_price": 180, "quantity": 1, "page": 9}])["docs"], "Appendix.pdf")
+    assert len(gv.merge_reads([{"docs": boq, "anchors": {}}, {"docs": again, "anchors": {}}])["docs"]["boq"]) == 1
+
+
 def test_scan_order_stays_near_the_cited_page():
     assert scan_order(37, 76, 3) == [37, 36, 38]
     assert scan_order(1, 76, 3) == [1, 2, 3]

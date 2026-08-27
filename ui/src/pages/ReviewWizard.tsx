@@ -244,7 +244,9 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
   const [autofillNote, setAutofillNote] = React.useState<"filled" | "manual" | "">("")
 
   // -- step 2: contract / BoQ + payment history ------------------------------
-  const [boqFile, setBoqFile] = React.useState<File | null>(null)
+  // The contract/BoQ slot takes SEVERAL files (contract, BoQ, appendices):
+  // the agent reads them in parallel and fuses them into one contract view.
+  const [boqFiles, setBoqFiles] = React.useState<File[]>([])
   const [boqFields, setBoqFields] = React.useState(() => ({
     cumulative_prior: existing ? String(existing.cumulative_prior || 0) : "0",
     prior_payment_count: existing ? String(existing.prior_payment_count || 0) : "0",
@@ -257,13 +259,15 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
    *  value when the reviewer hasn't provided one — a vendor document never
    *  silently becomes the ceiling that constrains the vendor's own billing,
    *  so the value lands in an editable field for the reviewer to confirm. */
-  const onPickBoq = async (f: File | null) => {
-    setBoqFile(f)
+  const onPickBoq = async (list: FileList | null) => {
+    const fresh = [...(list ?? [])].filter((f) => !boqFiles.some((e) => e.name === f.name))
+    if (!fresh.length) return
+    const all = [...boqFiles, ...fresh]
+    setBoqFiles(all)
     setBoqNote("")
-    if (!f) return
     setBoqExtracting(true)
     try {
-      const read = await api.extractBoq(f)
+      const read = await api.extractBoq(all)
       // The contract's own printed pre-VAT value is the ceiling; the summed
       // BoQ lines only stand in when no header value was read (a bare BoQ
       // upload) — a long BoQ's sum carries recap/duplicate rows.
@@ -292,6 +296,8 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
       setBoqExtracting(false)
     }
   }
+
+  const removeBoqFile = (name: string) => setBoqFiles((prev) => prev.filter((f) => f.name !== name))
 
   // -- step 3: COC + penalties on record -------------------------------------
   const [cocFile, setCocFile] = React.useState<File | null>(null)
@@ -352,6 +358,8 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
 
   const stagedName = (docType: string): string | undefined =>
     claim?.source_files.find((f) => f.doc_type === docType)?.path.split("/").pop()
+  const stagedNames = (docType: string): string[] =>
+    (claim?.source_files ?? []).filter((f) => f.doc_type === docType).map((f) => f.path.split("/").pop() ?? "")
 
   const set = (key: keyof typeof fields) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const value = e.target.value
@@ -442,7 +450,7 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
           // the end date feeds the step-4 delay inference.
           fd.append("contract_kind", fields.contract_kind)
           fd.append("contract_end_date", fields.contract_end_date)
-          if (boqFile) fd.append("contract_boq", boqFile)
+          for (const f of boqFiles) fd.append("contract_boq", f)
         }
         if (stepNo === 3) {
           // One acceptance document per contract kind.
@@ -580,7 +588,7 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
 
   // Pre-finance coverage: which required documents the agent has identified.
   // The step-2 contract/BoQ upload is one document covering two requirements.
-  const hasContractBoq = !!(stagedName("contract_boq") || boqFile)
+  const hasContractBoq = !!(stagedName("contract_boq") || boqFiles.length)
   const hasExportDocs = !!claim?.source_files.some((f) =>
     ["invoice", "contract_boq", "coc", "delivery_note"].includes(f.doc_type)
   )
@@ -886,19 +894,79 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
             )}
           >
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              <UploadSlot
-                label={t("Contract / BoQ", "العقد / جدول الكميات")}
-                hint={
-                  boqExtracting
-                    ? t("Reading the BoQ…", "جارٍ قراءة جدول الكميات…")
-                    : stagedName("contract_boq") ?? t("PDF — click to choose", "PDF — انقر للاختيار")
-                }
-                file={boqExtracting ? null : boqFile}
-                onPick={onPickBoq}
-                busy={boqExtracting}
-                disabled={ro}
-                className="sm:col-span-2 lg:col-span-3"
-              />
+              <div className="sm:col-span-2 lg:col-span-3">
+                <label
+                  className={cn(
+                    "flex items-center gap-3 rounded-lg border border-dashed border-border p-3",
+                    ro || boqExtracting ? "opacity-70" : "hover:bg-muted/50 cursor-pointer"
+                  )}
+                >
+                  {boqExtracting ? (
+                    <Loader2 className="text-primary size-4 shrink-0 animate-spin" />
+                  ) : (
+                    <Upload className="text-muted-foreground size-4 shrink-0" />
+                  )}
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-medium">
+                      {t("Contract and bill of quantities", "العقد وجدول الكميات")}
+                    </span>
+                    <span className="text-muted-foreground block text-xs">
+                      {boqExtracting
+                        ? t("Reading the documents…", "جارٍ قراءة المستندات…")
+                        : t(
+                            "One combined file, or the contract, the BoQ and appendices as separate files — the agent reads them together",
+                            "ملف واحد مجمّع، أو العقد وجدول الكميات والملاحق كملفات منفصلة — يقرأها الوكيل معاً"
+                          )}
+                    </span>
+                  </span>
+                  {!ro && (
+                    <input
+                      type="file"
+                      multiple
+                      className="hidden"
+                      accept=".pdf,.docx,.png,.jpg,.jpeg"
+                      onChange={(e) => {
+                        onPickBoq(e.target.files)
+                        e.target.value = ""
+                      }}
+                    />
+                  )}
+                </label>
+                {boqFiles.length > 0 ? (
+                  <ul className="mt-2 flex flex-wrap gap-2">
+                    {boqFiles.map((f) => (
+                      <li key={f.name} className="bg-muted/60 flex items-center gap-1.5 rounded-md px-2 py-1 text-xs">
+                        <span className="max-w-[16rem] truncate">{f.name}</span>
+                        {!ro && !boqExtracting && (
+                          <button
+                            type="button"
+                            onClick={() => removeBoqFile(f.name)}
+                            className="hover:text-destructive rounded"
+                            aria-label={t("Remove", "إزالة")}
+                          >
+                            <X className="size-3" />
+                          </button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  stagedNames("contract_boq").length > 0 && (
+                    <ul className="mt-2 flex flex-wrap gap-2">
+                      {stagedNames("contract_boq").map((n) => (
+                        <li key={n} className="bg-muted/60 rounded-md px-2 py-1 text-xs">
+                          <span className="max-w-[16rem] truncate">{n}</span>
+                        </li>
+                      ))}
+                      {!ro && (
+                        <li className="text-muted-foreground self-center text-xs">
+                          {t("on file — choosing new files replaces them", "مرفوعة — اختيار ملفات جديدة يستبدلها")}
+                        </li>
+                      )}
+                    </ul>
+                  )
+                )}
+              </div>
               <Field label={t("Contract value (base)", "قيمة العقد (قبل الضريبة)")}>
                 <input
                   className={inputCls}
@@ -961,8 +1029,8 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
               <p className="text-ok mt-2 flex items-center gap-1.5 text-xs">
                 <Check className="size-3.5" />
                 {t(
-                  "Contract value suggested from the BoQ line totals — confirm or correct it before matching.",
-                  "قيمة العقد مقترحة من مجموع بنود جدول الكميات — راجعها وأكدها قبل المطابقة."
+                  "Contract value suggested from the contract / BoQ documents — confirm or correct it before matching.",
+                  "قيمة العقد مقترحة من مستندات العقد وجدول الكميات — راجعها وأكدها قبل المطابقة."
                 )}
               </p>
             )}

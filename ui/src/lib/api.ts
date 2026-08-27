@@ -48,11 +48,12 @@ export const api = {
     if (!res.ok) throw await failure(res, `extract`, true)
     return res.json() as Promise<InvoiceDoc | null>
   },
-  /** Read one contract/BoQ for the step-2 suggestions (contract
-   *  value, end date); null = no reader (mock engine). */
-  extractBoq: async (file: File): Promise<ContractExtract | null> => {
+  /** Read the contract / BoQ file(s) for the step-2 suggestions (contract
+   *  value, end date) — one combined document or several files fused;
+   *  null = no reader (mock engine). */
+  extractBoq: async (files: File[]): Promise<ContractExtract | null> => {
     const fd = new FormData()
-    fd.append("contract_boq", file)
+    for (const f of files) fd.append("contract_boq", f)
     const res = await fetch("/api/extract/boq", { method: "POST", body: fd })
     if (!res.ok) throw await failure(res, `extract`, true)
     return res.json() as Promise<ContractExtract | null>

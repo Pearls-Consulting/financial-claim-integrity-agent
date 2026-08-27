@@ -290,15 +290,49 @@ class ContractExtract(BaseModel):
 
 
 @router.post("/extract/boq", response_model=ContractExtract | None)
-def extract_boq(contract_boq: UploadFile = File(...)) -> ContractExtract | None:
-    """Read one contract/BoQ on its own — powers the step-2 suggestions
-    (contract value from summed line totals, contract end date from the
-    header), reviewer-confirmed, never silently trusted.
+def extract_boq(contract_boq: list[UploadFile] = File(...)) -> ContractExtract | None:
+    """Read the contract / BoQ file(s) on their own — powers the step-2
+    suggestions (contract value, end date), reviewer-confirmed, never
+    silently trusted. One combined document or several files (the
+    contract, the BoQ, appendices) — they are read in parallel and fused.
 
     Null means "no reader available" (mock engine).
     """
-    docs = _read_single(contract_boq, "contract_boq")
+    docs = _read_many([u for u in contract_boq if u.filename], "contract_boq")
     return ContractExtract(boq=docs.boq, contract=docs.contract) if docs else None
+
+
+def _read_many(uploads: list[UploadFile], doc_type: str):
+    """Several uploaded files of one document type → ONE ClaimDocuments
+    (headers: first read wins, lines concatenate, BoQ codes de-duplicated);
+    None on the mock engine."""
+    engine = get_settings().extractor_engine
+    if engine not in ("gpt", "azure") or not uploads:
+        return None
+    batch = f"_prefill/{uuid.uuid4().hex[:8]}"
+    paths = [PROJECT_ROOT / submissions.stage_file(batch, u, doc_type).path for u in uploads]
+    try:
+        if engine == "gpt":
+            from app.services.extraction.gpt_vision import merge_reads, read_files, to_documents
+
+            reads = [r for r in read_files([(p, doc_type) for p in paths]) if r]
+            if not reads:
+                raise HTTPException(status_code=422, detail="Read failed: none of the files could be read")
+            return to_documents(merge_reads(reads))
+        from app.services.extraction.cu_client import analyze_layout
+        from app.services.extraction.structuring import structure_documents
+
+        ocr = []
+        for p in paths:
+            result = analyze_layout(p)
+            if result.ok:
+                ocr.append((p.name, doc_type, result.markdown))
+        if not ocr:
+            raise HTTPException(status_code=422, detail="OCR failed on every file")
+        return structure_documents(ocr)
+    finally:
+        for p in paths:
+            _discard_prefill(p)
 
 
 @router.post("/extract/attachments", response_model=list[DetectedAttachment])
@@ -370,9 +404,11 @@ def create_submission(
     # ERP-owned context the demo has no other source for.
     penalties: str = Form("[]"),  # JSON list of {reason_ar, amount, date}
     attachments: str = Form("[]"),  # JSON list of attachment names as filed
-    # Document files, one slot per doc_type the extractor understands.
+    # Document files, one slot per doc_type the extractor understands. The
+    # contract/BoQ slot takes SEVERAL files (contract, BoQ, appendices) that
+    # the extractor fuses into one contract view.
     invoice: UploadFile | None = File(None),
-    contract_boq: UploadFile | None = File(None),
+    contract_boq: list[UploadFile] = File(default=[]),
     coc: UploadFile | None = File(None),
     delivery_note: UploadFile | None = File(None),
     other: list[UploadFile] = File(default=[]),
@@ -383,11 +419,13 @@ def create_submission(
         submissions.stage_file(claim_id, upload, doc_type)
         for upload, doc_type in (
             (invoice, "invoice"),
-            (contract_boq, "contract_boq"),
             (coc, "coc"),
             (delivery_note, "delivery_note"),
         )
         if upload is not None and upload.filename
+    ]
+    source_files += [
+        submissions.stage_file(claim_id, upload, "contract_boq") for upload in contract_boq if upload.filename
     ]
     source_files += [
         submissions.stage_file(claim_id, upload, "other") for upload in other if upload.filename
@@ -459,8 +497,10 @@ def update_submission(
     detected_attachments: str | None = Form(None),
     attachment_docs: list[UploadFile] = File(default=[]),
     # Documents attached at their gate's step; re-uploading replaces the slot.
+    # contract_boq is a SET of files (contract, BoQ, appendices): a new set
+    # replaces the whole previous set.
     invoice: UploadFile | None = File(None),
-    contract_boq: UploadFile | None = File(None),
+    contract_boq: list[UploadFile] = File(default=[]),
     coc: UploadFile | None = File(None),
     delivery_note: UploadFile | None = File(None),
     other: list[UploadFile] = File(default=[]),
@@ -479,7 +519,6 @@ def update_submission(
     # versa, since the contract kind decides which the gate should read.
     slots = (
         (invoice, "invoice", ("invoice",)),
-        (contract_boq, "contract_boq", ("contract_boq",)),
         (coc, "coc", ("coc", "delivery_note")),
         (delivery_note, "delivery_note", ("coc", "delivery_note")),
     )
@@ -487,6 +526,10 @@ def update_submission(
         if upload is not None and upload.filename:
             submissions.drop_files(claim, lambda f, r=replaces: f.doc_type in r)
             claim.source_files.append(submissions.stage_file(claim_id, upload, doc_type))
+    real_cb = [u for u in contract_boq if u.filename]
+    if real_cb:
+        submissions.drop_files(claim, lambda f: f.doc_type == "contract_boq")
+        claim.source_files += [submissions.stage_file(claim_id, upload, "contract_boq") for upload in real_cb]
     real_other = [u for u in other if u.filename]
     if real_other:
         submissions.drop_files(claim, lambda f: f.doc_type == "other")

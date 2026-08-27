@@ -330,7 +330,9 @@ highlight of the cited page only — scanned pages have no text layer).
   name on this claim is exactly the kind of thing a client spots
 
 ## Scripted demo beats
-1. Step 2: upload the REAL contract. The agent reads the scanned pages: BoQ
+1. Step 2: upload the REAL contract. (The slot takes several files — a
+   contract, a separate BoQ, appendices — and fuses them; every value keeps
+   the file and page it was read from, so evidence opens the right one.) The agent reads the scanned pages: BoQ
    lines from rotated tables, the contract value, and the PENALTY CLAUSES
    (p.37). Contract value suggestion fills the form.
 2. Step 2 results: open a BoQ evidence chip -> the embedded reader lands on

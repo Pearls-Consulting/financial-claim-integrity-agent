@@ -55,6 +55,7 @@ export interface InvoiceLine {
   quantity: number
   amount: number
   page?: number // 1-based page the line was read from; 0/undefined = unknown
+  source_file?: string // staged file the value was read from (a claim may hold several contract/BoQ files)
 }
 
 export interface InvoiceDoc {
@@ -68,6 +69,7 @@ export interface InvoiceDoc {
   qr_payload: string
   lines: InvoiceLine[]
   page?: number // page carrying the invoice header
+  source_file?: string // staged file the value was read from (a claim may hold several contract/BoQ files)
 }
 
 export interface CocDoc {
@@ -79,6 +81,7 @@ export interface CocDoc {
   has_observations: boolean | null
   delay_days: number
   page?: number
+  source_file?: string // staged file the value was read from (a claim may hold several contract/BoQ files)
 }
 
 export interface BoqLine {
@@ -89,6 +92,7 @@ export interface BoqLine {
   unit_price: number
   quantity: number
   page?: number // 1-based page of the contract/BoQ the row sits on
+  source_file?: string // staged file the value was read from (a claim may hold several contract/BoQ files)
 }
 
 export interface ReceiptLine {
@@ -96,6 +100,7 @@ export interface ReceiptLine {
   description_ar: string
   quantity: number
   page?: number
+  source_file?: string // staged file the value was read from (a claim may hold several contract/BoQ files)
 }
 
 /** إيصال استلام المنتجات — the D365 product receipt (procedure step 5). */
@@ -104,6 +109,7 @@ export interface ReceiptDoc {
   receipt_date: string
   lines: ReceiptLine[]
   page?: number
+  source_file?: string // staged file the value was read from (a claim may hold several contract/BoQ files)
 }
 
 /** One penalty clause as PRINTED in the contract — the contract's TERMS, not
@@ -118,6 +124,7 @@ export interface PenaltyTerm {
   text_ar: string
   ref: string
   page: number // 1-based page of the contract document; 0 = unknown
+  source_file?: string // staged file the value was read from (a claim may hold several contract/BoQ files)
 }
 
 /** Contract/PO header as extracted from the contract document. */
@@ -128,6 +135,7 @@ export interface ContractDoc {
   value_base: number
   penalty_terms: PenaltyTerm[]
   page?: number // page carrying the contract header (number, dates, value)
+  source_file?: string // staged file the value was read from (a claim may hold several contract/BoQ files)
 }
 
 /** What one contract/BoQ read yields for the step-2 suggestions. */

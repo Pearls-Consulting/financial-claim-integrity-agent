@@ -63,6 +63,7 @@ class BoqLine(BaseModel):
     unit_price: float
     quantity: float
     page: int = 0  # 1-based page of the contract/BoQ document the line sits on; 0 = unknown
+    source_file: str = ""  # staged file name the value was read from (a claim may hold several contract/BoQ files)
 
 
 class InvoiceLine(BaseModel):
@@ -72,6 +73,7 @@ class InvoiceLine(BaseModel):
     quantity: float
     amount: float
     page: int = 0  # 1-based page of the invoice the line sits on; 0 = unknown
+    source_file: str = ""  # staged file name the value was read from (a claim may hold several contract/BoQ files)
 
 
 class InvoiceDoc(BaseModel):
@@ -87,6 +89,7 @@ class InvoiceDoc(BaseModel):
     qr_payload: str = ""  # base64 TLV from the printed QR; "" = no QR found
     lines: list[InvoiceLine] = Field(default_factory=list)
     page: int = 0  # 1-based page carrying the invoice header (number, totals); 0 = unknown
+    source_file: str = ""  # staged file name the value was read from (a claim may hold several contract/BoQ files)
 
 
 class CocDoc(BaseModel):
@@ -100,6 +103,7 @@ class CocDoc(BaseModel):
     has_observations: bool | None = None  # هل هناك ملاحظات على التنفيذ؟
     delay_days: int = 0
     page: int = 0  # 1-based page carrying the COC header; 0 = unknown
+    source_file: str = ""  # staged file name the value was read from (a claim may hold several contract/BoQ files)
 
 
 class ReceiptLine(BaseModel):
@@ -107,6 +111,7 @@ class ReceiptLine(BaseModel):
     description_ar: str = ""
     quantity: float  # quantity accepted for this claim period
     page: int = 0  # 1-based page of the delivery note the line sits on; 0 = unknown
+    source_file: str = ""  # staged file name the value was read from (a claim may hold several contract/BoQ files)
 
 
 class ReceiptDoc(BaseModel):
@@ -118,6 +123,7 @@ class ReceiptDoc(BaseModel):
     receipt_date: str = ""
     lines: list[ReceiptLine] = Field(default_factory=list)
     page: int = 0  # 1-based page carrying the receipt header; 0 = unknown
+    source_file: str = ""  # staged file name the value was read from (a claim may hold several contract/BoQ files)
 
 
 class PenaltyTerm(BaseModel):
@@ -136,6 +142,7 @@ class PenaltyTerm(BaseModel):
     text_ar: str = ""  # verbatim clause fragment (evidence anchor)
     ref: str = ""  # article / clause number as printed, e.g. "٣.٣.١"
     page: int = 0  # 1-based page of the contract document; 0 = unknown
+    source_file: str = ""  # staged file name the value was read from (a claim may hold several contract/BoQ files)
 
 
 class ContractDoc(BaseModel):
@@ -148,6 +155,7 @@ class ContractDoc(BaseModel):
     value_with_vat: float = 0.0  # as printed INCLUDING VAT, when the contract prints it; 0 = not printed
     penalty_terms: list[PenaltyTerm] = Field(default_factory=list)
     page: int = 0  # 1-based page carrying the contract header (number, dates, value); 0 = unknown
+    source_file: str = ""  # staged file name the value was read from (a claim may hold several contract/BoQ files)
 
 
 class Penalty(BaseModel):

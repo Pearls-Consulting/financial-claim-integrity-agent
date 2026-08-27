@@ -1,6 +1,7 @@
 import { FileSearch, ScrollText } from "lucide-react"
 
 import { usePdfViewer } from "@/components/PdfViewerContext"
+import { docIndexFor } from "@/lib/evidence"
 import { useLang } from "@/lib/i18n"
 import type { Claim, ClaimDocuments, PenaltyTerm } from "@/types/domain"
 
@@ -22,7 +23,7 @@ export function PenaltyTermsCard({
 
   const terms = extracted?.contract?.penalty_terms ?? []
   if (!terms.length) return null
-  const index = claim?.source_files.findIndex((f) => f.doc_type === "contract_boq") ?? -1
+  const hasContract = docIndexFor(claim, undefined, ["contract_boq"]) !== -1
 
   const perLabel = (per: string) =>
     per === "day" ? t(" per day of delay", " عن كل يوم تأخير") : per === "week" ? t(" per week of delay", " عن كل أسبوع تأخير") : ""
@@ -36,7 +37,9 @@ export function PenaltyTermsCard({
   }
 
   const show = (term: PenaltyTerm) => {
-    if (!claim || index === -1) return
+    if (!claim) return
+    const index = docIndexFor(claim, term.source_file, ["contract_boq"])
+    if (!hasContract) return
     const file = claim.source_files[index]
     openDocument({
       claimId: claim.id,
@@ -85,7 +88,7 @@ export function PenaltyTermsCard({
                 </p>
               )}
             </div>
-            {claim && index !== -1 && (
+            {claim && hasContract && (
               <button
                 type="button"
                 onClick={() => show(term)}

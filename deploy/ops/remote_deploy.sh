@@ -46,9 +46,13 @@ echo ">> syncing python deps"
 "$APP/venv/bin/pip" install -q -r "$REL/backend/requirements.txt"
 
 echo ">> linking persistent state"
-rm -rf "$REL/backend/data" "$REL/backend/uploads"
+rm -rf "$REL/backend/data" "$REL/backend/uploads" "$REL/backend/.cache"
+mkdir -p "$DATA/cache"
 ln -sfn "$DATA/db" "$REL/backend/data"
 ln -sfn "$DATA/uploads" "$REL/backend/uploads"
+# Model-read cache (EXTRACTION_CACHE): keyed by file content, so it must
+# outlive releases — otherwise every deploy re-reads every demo document.
+ln -sfn "$DATA/cache" "$REL/backend/.cache"
 
 echo ">> switching current -> $REL"
 ln -sfn "$REL" "$APP/current"

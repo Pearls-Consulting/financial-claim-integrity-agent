@@ -244,6 +244,15 @@ def test_printed_day_month_year_dates_become_iso():
     assert out["docs"]["contract"]["end_date"] == "خمسة أشهر"
 
 
+def test_contract_value_incl_vat_never_becomes_the_base():
+    out = gv.validate_read({"contract": {"contract_no": "K", "value_base": 23115000.0, "value_with_vat": 23115000.0}})
+    assert out["docs"]["contract"]["value_base"] == 20100000.0
+    out = gv.validate_read({"contract": {"contract_no": "K", "value_base": 20100000.0, "value_with_vat": 23115000.0}})
+    assert out["docs"]["contract"]["value_base"] == 20100000.0  # consistent pair untouched
+    out = gv.validate_read({"contract": {"contract_no": "K", "value_base": 620000.0, "value_with_vat": 0}})
+    assert out["docs"]["contract"]["value_base"] == 620000.0  # nothing to compare against
+
+
 def test_scan_order_stays_near_the_cited_page():
     assert scan_order(37, 76, 3) == [37, 36, 38]
     assert scan_order(1, 76, 3) == [1, 2, 3]

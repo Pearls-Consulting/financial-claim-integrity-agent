@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     gpt_vision_effort: str = "low"  # Responses-API reasoning effort
     gpt_vision_render_dpi: int = 200  # pages are sent as images rendered at this DPI (never as PDF)
     gpt_vision_chunk_pages: int = 5  # pages per call; smaller = more parallel, shorter outputs, better row recall
-    gpt_vision_concurrency: int = 12  # files x chunks x passes in flight; beyond ~12-16 the deployment queues
+    gpt_vision_concurrency: int = 8  # calls in flight; each holds a chunk's page images + request body (~50 MB) — the demo service runs under a memory cap
     gpt_vision_max_output_tokens: int = 24000  # dense BoQ chunks need room
     gpt_vision_timeout_seconds: float = 300.0
     gpt_vision_attachment_max_pages: int = 3  # identity docs: read the first pages only

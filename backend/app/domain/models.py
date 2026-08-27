@@ -144,7 +144,8 @@ class ContractDoc(BaseModel):
     contract_no: str = ""
     start_date: str = ""
     end_date: str = ""  # contractual completion / delivery date
-    value_base: float = 0.0
+    value_base: float = 0.0  # contract value EXCLUDING VAT
+    value_with_vat: float = 0.0  # as printed INCLUDING VAT, when the contract prints it; 0 = not printed
     penalty_terms: list[PenaltyTerm] = Field(default_factory=list)
     page: int = 0  # 1-based page carrying the contract header (number, dates, value); 0 = unknown
 

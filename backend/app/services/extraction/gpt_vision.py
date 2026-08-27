@@ -87,7 +87,8 @@ OUTPUT — return ONLY this JSON (no markdown fences, no commentary):
   "boq": [{"item_code": "", "description_ar": "", "description_en": "", "unit": "", "unit_price": 0.0, "quantity": 0.0, "page": 0}],
   "contract": {
     "contract_no": "", "start_date": "YYYY-MM-DD if derivable, else as printed",
-    "end_date": "YYYY-MM-DD if derivable, else as printed", "value_base": 0.0, "page": 0,
+    "end_date": "YYYY-MM-DD if derivable, else as printed",
+    "value_base": 0.0, "value_with_vat": 0.0, "page": 0,
     "penalty_terms": [{
       "kind": "delay", "rate_percent": 0.0, "per": "day|week|",
       "basis": "", "cap_percent": 0.0, "text_ar": "", "ref": "", "page": 0
@@ -110,8 +111,12 @@ RULES
   Do not re-emit a table's recap/summary pages as line items.
 - "contract" = the contract/PO HEADER: its number, start date (contract date
   or site handover), END date (contract duration end / delivery deadline —
-  phrases like مدة العقد حتى, تاريخ نهاية العقد, موعد التسليم) and the
-  pre-VAT value. null when no contract/PO is present in these pages.
+  phrases like مدة العقد حتى, تاريخ نهاية العقد, موعد التسليم) and its
+  value: value_base = EXCLUDING VAT (غير شامل الضريبة / قبل الضريبة),
+  value_with_vat = INCLUDING VAT (شامل ضريبة القيمة المضافة) — each only
+  when printed as such; a contract that prints one figure labelled شامل
+  الضريبة has value_with_vat, not value_base. null when no contract/PO is
+  present in these pages.
 - end_date from a DURATION: when the contract states a duration instead of an
   end date (مدة العقد خمسة أشهر من تاريخ محضر بدء المشروع, "12 months from
   signing"), derive end_date = anchor date + duration (YYYY-MM-DD) ONLY when
@@ -179,7 +184,7 @@ Return ONLY this JSON (no fences, no commentary):
               "seller_vat_number": "", "total_with_vat": 0.0, "vat_amount": 0.0} | null,
   "coc": {"coc_no": "", "coc_date": "", "claim_amount": 0.0, "delay_days": 0} | null,
   "receipt": {"receipt_no": "", "receipt_date": ""} | null,
-  "contract": {"contract_no": "", "start_date": "", "end_date": "", "value_base": 0.0} | null
+  "contract": {"contract_no": "", "start_date": "", "end_date": "", "value_base": 0.0, "value_with_vat": 0.0} | null
 }
 Set a section to null when the pages hold no such document (a tax invoice =
 فاتورة ضريبية; a COC = محضر الإنجاز; a receipt = إشعار تسليم / محضر استلام;
@@ -188,7 +193,9 @@ contract number/value is not a contract — "contract" stays null there.
 seller_vat_number is the VAT registration number (الرقم الضريبي, 15 digits)
 — not the CR number (السجل التجاري). coc.claim_amount is the claim TOTAL
 INCLUDING VAT (إجمالي المطالبة / شامل الضريبة), never the pre-VAT amount or
-the VAT line. contract.value_base is the contract value EXCLUDING VAT.
+the VAT line. contract.value_base is the contract value EXCLUDING VAT
+(قبل الضريبة); contract.value_with_vat the figure labelled شامل الضريبة —
+never put the incl-VAT figure in value_base.
 """
 
 # Which (section, field) pairs the focused read overrides. Only header values —
@@ -197,7 +204,7 @@ _KEY_FIELDS = {
     "invoice": ("invoice_no", "invoice_date", "seller_vat_number", "total_with_vat", "vat_amount"),
     "coc": ("coc_no", "coc_date", "claim_amount", "delay_days"),
     "receipt": ("receipt_no", "receipt_date"),
-    "contract": ("contract_no", "start_date", "end_date", "value_base"),
+    "contract": ("contract_no", "start_date", "end_date", "value_base", "value_with_vat"),
 }
 
 
@@ -223,7 +230,7 @@ def read_key_fields(unit: Unit, *, client: Any | None = None) -> dict[str, Any]:
             v = block.get(f)
             if v in (None, "", 0, 0.0, []):
                 continue
-            if f in ("total_with_vat", "vat_amount", "claim_amount", "value_base"):
+            if f in ("total_with_vat", "vat_amount", "claim_amount", "value_base", "value_with_vat"):
                 try:
                     v = float(v)
                 except (TypeError, ValueError):
@@ -640,6 +647,25 @@ def _coerce_codes(obj: Any) -> Any:
     return obj
 
 
+_VAT = 1.15
+
+
+def _fix_contract_value(contract: Any) -> None:
+    """Saudi VAT is a statutory 15%. When the reader put the SAME figure in
+    both fields, or a base that is exactly the incl-VAT figure, the pre-VAT
+    value is recovered arithmetically (23,115,000 → 20,100,000) instead of
+    becoming the ceiling every gate measures against."""
+    if not isinstance(contract, dict):
+        return
+    try:
+        base = float(contract.get("value_base") or 0)
+        total = float(contract.get("value_with_vat") or 0)
+    except (TypeError, ValueError):
+        return
+    if total > 0 and base > 0 and abs(base - total) < 1.0:
+        contract["value_base"] = round(total / _VAT, 2)
+
+
 def validate_read(data: dict[str, Any], *, page_offset: int = 0) -> dict[str, Any]:
     """Model JSON → {docs: ClaimDocuments-dict, anchors: dict}. Raises on
     schema mismatch (the caller retries the call with the error)."""
@@ -649,6 +675,7 @@ def validate_read(data: dict[str, Any], *, page_offset: int = 0) -> dict[str, An
         data.pop(k, None)  # ERP-owned / upload-time — never read here
     data["boq"] = _real_boq_rows(data.get("boq"))
     _fix_penalty_per(data.get("contract"))
+    _fix_contract_value(data.get("contract"))
     docs = ClaimDocuments.model_validate(data)
     anchors = {k: str(anchors_raw.get(k) or "").strip() for k in _ANCHOR_KEYS} if isinstance(anchors_raw, dict) else {}
     return {"docs": docs.model_dump(), "anchors": anchors}

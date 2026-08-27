@@ -22,6 +22,23 @@ from app.services.datasource import get_source
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
+# Where a claim's staged file may legitimately resolve to. On the server the
+# release's backend/uploads is a SYMLINK into the persistent data dir, so a
+# resolved path is no longer under the release root — checking only
+# PROJECT_ROOT rejected every uploaded document (viewer + locate returned
+# "File not found" in production while working locally).
+_ALLOWED_ROOTS = (PROJECT_ROOT, submissions.UPLOAD_DIR.resolve())
+
+
+def _staged_path(claim: Claim, index: int) -> Path:
+    """The on-disk file for claim.source_files[index], or 404."""
+    if index < 0 or index >= len(claim.source_files):
+        raise HTTPException(status_code=404, detail=f"Claim {claim.id} has no file #{index}")
+    path = (PROJECT_ROOT / claim.source_files[index].path).resolve()
+    if not any(path.is_relative_to(root) for root in _ALLOWED_ROOTS) or not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return path
+
 # Every claim/document endpoint requires a signed-in session (httpOnly cookie,
 # see app/api/deps.py). /health and /api/auth/* live outside this router.
 router = APIRouter(prefix="/api", dependencies=[Depends(require_session)])
@@ -121,7 +138,7 @@ def export_entries(claim: Claim) -> list[tuple[str, Path]]:
             if f.doc_type != doc_type:
                 continue
             path = (PROJECT_ROOT / f.path).resolve()
-            if not path.is_relative_to(PROJECT_ROOT) or not path.is_file():
+            if not any(path.is_relative_to(root) for root in _ALLOWED_ROOTS) or not path.is_file():
                 continue
             name = path.name if doc_type == "contract_boq" else f"{claim.id}_{_EXPORT_LABELS[doc_type]}_{path.name}"
             if name in seen:  # two files with the same name — keep both
@@ -160,11 +177,7 @@ def claim_file(claim_id: str, index: int) -> FileResponse:
     claim = _find_claim(claim_id)
     if claim is None:
         raise HTTPException(status_code=404, detail=f"Unknown claim {claim_id}")
-    if index < 0 or index >= len(claim.source_files):
-        raise HTTPException(status_code=404, detail=f"Claim {claim_id} has no file #{index}")
-    path = (PROJECT_ROOT / claim.source_files[index].path).resolve()
-    if not path.is_relative_to(PROJECT_ROOT) or not path.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
+    path = _staged_path(claim, index)
     media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
     return FileResponse(
         path,
@@ -195,11 +208,7 @@ def locate_in_file(claim_id: str, index: int, req: LocateRequest) -> LocateRespo
     claim = _find_claim(claim_id)
     if claim is None:
         raise HTTPException(status_code=404, detail=f"Unknown claim {claim_id}")
-    if index < 0 or index >= len(claim.source_files):
-        raise HTTPException(status_code=404, detail=f"Claim {claim_id} has no file #{index}")
-    path = (PROJECT_ROOT / claim.source_files[index].path).resolve()
-    if not path.is_relative_to(PROJECT_ROOT) or not path.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
+    path = _staged_path(claim, index)
     # CU is the viewer's fallback on every real engine (gpt | azure) — the
     # only place it is still called, one rendered page at a time.
     s = get_settings()

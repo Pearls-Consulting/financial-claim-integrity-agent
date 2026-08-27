@@ -13,9 +13,13 @@ WorkingDirectory=/srv/claimint/app/current/backend
 ExecStart=/srv/claimint/app/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9201
 Restart=always
 RestartSec=3
-# 3.8G box shared with the prequal fleet — cap transient spikes (PDF
-# rasterization for QR decode) before the kernel OOM-killer picks a victim.
-MemoryMax=1G
+# 3.8G box shared with the prequal fleet — cap transient spikes before the
+# kernel OOM-killer picks a victim. The GPT reader renders and ships page
+# images from 8 worker threads: measured peak ~900M at 12 workers under the
+# old 1G cap, so the cap is 1.5G and glibc is told to stop growing a malloc
+# arena per thread (the usual cause of a threaded Python process ballooning).
+MemoryMax=1536M
+Environment=MALLOC_ARENA_MAX=2
 
 [Install]
 WantedBy=multi-user.target

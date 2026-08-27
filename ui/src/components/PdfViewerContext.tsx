@@ -16,8 +16,10 @@ export interface PdfViewRequest {
   page?: number | null
   /** Text to locate + highlight (searched across the whole document). */
   highlight?: string
-  /** Independent extra terms to mark wherever they appear (e.g. the BoQ item
-   *  code alongside its unit price). Never bias page recovery. */
+  /** Row context (the BoQ item code, the unit price next to a quantity):
+   *  marked faintly alongside the value on the page it is shown on, and
+   *  offered to the OCR fallback for the cited page only. Never used to
+   *  search for a page — the value is. */
   highlightAlso?: string[]
   /** Weak anchor — the verbatim clause/excerpt the value came from. Tried
    *  LAST by the OCR-locate fallback (it usually leads with the label). */

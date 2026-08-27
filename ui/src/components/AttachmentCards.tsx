@@ -65,6 +65,7 @@ export function AttachmentCards({ detected, claim }: { detected: DetectedAttachm
       claimId: claim.id,
       index,
       fileName: d.file_name,
+      page: d.page || undefined,
       highlight: key || undefined,
       highlightAlso: [d.fields.cr_number, d.fields.vat_number, d.fields.expiry_date].filter(
         (v): v is string => !!v && v !== key

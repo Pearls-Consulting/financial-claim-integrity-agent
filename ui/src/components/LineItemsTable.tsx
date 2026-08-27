@@ -67,10 +67,14 @@ export function LineItemsTable({
     if (index === -1) return
     const qty = side === "boq" ? r.boq!.quantity : r.inv!.quantity
     const price = side === "boq" ? r.boq!.unit_price : r.inv!.unit_price
+    // The reader cites the page each row was read from — the viewer lands
+    // there directly, so the OCR fallback never has to search the document.
+    const page = side === "boq" ? r.boq!.page : r.inv!.page
     openDocument({
       claimId: claim.id,
       index,
       fileName: claim.source_files[index].path.split("/").pop(),
+      page: page || undefined,
       highlight: String(qty),
       highlightAlso: [r.item_code, String(price)],
       fieldName:

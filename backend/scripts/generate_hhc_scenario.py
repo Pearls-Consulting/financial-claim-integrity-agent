@@ -117,13 +117,18 @@ def tlv(tag: int, value: bytes | str) -> bytes:
     return bytes([tag, len(b)]) + b
 
 
-def payload_valid() -> str:
+def payload_valid(total: float = TOTAL, vat: float = VAT) -> str:
+    """A QR signed over THIS invoice's own totals. The overpriced variant gets
+    its own (higher) totals so it fails ONLY the BoQ price check — its QR is
+    genuine; the vendor simply billed above the contract. Re-using the real
+    invoice's QR would also trip the intake QR-vs-face check and muddle the
+    demo beat with a tampering story."""
     phase1 = (
         tlv(1, VENDOR["name_ar"])
         + tlv(2, VENDOR["vat"])
         + tlv(3, TS)
-        + tlv(4, f"{TOTAL:.2f}")
-        + tlv(5, f"{VAT:.2f}")
+        + tlv(4, f"{total:.2f}")
+        + tlv(5, f"{vat:.2f}")
     )
     digest = hashlib.sha256(
         json.dumps([i[:2] for i in ITEMS], ensure_ascii=False).encode() + INVOICE_NO.encode()
@@ -265,10 +270,10 @@ supporting_docs/contracts/hhc/).
 
 ## Why this scenario exists
 "Even complex contracts can be handled": scanned Arabic pages, rotated BoQ
-tables, penalty clauses buried on p.37 — the agent reads them (Azure CU
-layout OCR + GPT structuring), cites them, and SHOWS the evidence in the
-embedded PDF reader (OCR-polygon highlight — scanned pages have no text
-layer).
+tables, penalty clauses buried on p.37 — the agent reads them (GPT vision over
+the page images, chunks in parallel, the page cited for every value) and
+SHOWS the evidence in the embedded PDF reader (Azure CU OCR-polygon
+highlight of the cited page only — scanned pages have no text layer).
 
 ## The contract's own facts (what extraction should find)
 - Clause 1.4: total value 23,115,000.00 SAR incl. VAT (base {CONTRACT_BASE:,.0f})
@@ -293,26 +298,36 @@ layer).
 - Project / contract no:  {CONTRACT_NO}
 - Contract kind:          WORKS -> step 3 asks for the COC
 - Contract value (base):  {CONTRACT_BASE:,.0f}  (or leave empty — uploading the
-                          contract suggests the BoQ total; correct it to this)
-- Contract end date:      {END_DATE}  (auto-suggested when the extractor derives
-                          it from the 5-month duration + the commencement date
-                          printed on the COC; type it if the field stays empty)
+                          contract suggests its printed pre-VAT value)
+- Contract end date:      leave EMPTY. The contract only states a 5-month
+                          duration; its anchor (محضر بدء المشروع {START_DATE}) is
+                          printed on the COC, so the agent derives {END_DATE}
+                          once the COC is uploaded at step 3 — the step-4
+                          delay findings cite it. Type it only if you want
+                          it in the header at step 2.
 - Claim type:             Periodic — payment no. 2
 - Prior payments:         1 payment, cumulative {CUMULATIVE_PRIOR:,.0f}
   (payment 1 = 25% milestone per the contract's payment schedule, p.36)
 
 ## Files
-- {CONTRACT_DEST}  — the real contract (step 2 upload; first
-  OCR pass over 76 pages takes a few minutes and is disk-cached — pre-warm
-  before the demo by uploading it once)
+- {CONTRACT_DEST}  — the real contract (step 2 upload; the
+  76-page read takes ~2 minutes. With EXTRACTION_CACHE=true in backend/.env
+  the read is cached by file content and every later gate run is instant;
+  with the cache off EVERY cumulative run re-reads it)
 - Invoice-AlBait-{INVOICE_NO}_real.pdf — 8 real BoQ lines, quantities within
   contract quantities, prices matching the BoQ
 - Invoice-AlBait-{INVOICE_NO}_overpriced.pdf — line 9.10 billed at 200.00 vs
-  the BoQ's 180.00 (the contract & BoQ gate fails with the exact line cited)
+  the BoQ's 180.00 (the contract & BoQ gate fails with the exact line cited).
+  Its QR is signed over its OWN totals, so intake still passes: the story is
+  "billed above the contract", not "tampered invoice"
 - {COC_NO}_ontime.pdf — accepted within the contract period
 - {COC_NO}_late.pdf — dated {COC_DATE_LATE}, 20 days late, delay declared
 - WorkCommencement-{CONTRACT_NO}.pdf — site-handover minutes (the date the
   5-month duration runs from; upload at step 5 as a vendor file)
+- vendor-file/ — Al-Bait's CR, Zakat and GOSI certificates and the award
+  letter for HHC00050 (step 5). Use THESE, not "other docs/" — that folder
+  holds the demo-vendor's (Al-Waha) papers, and a CR in another company's
+  name on this claim is exactly the kind of thing a client spots
 
 ## Scripted demo beats
 1. Step 2: upload the REAL contract. The agent reads the scanned pages: BoQ
@@ -345,9 +360,14 @@ def main() -> None:
     if not dest.exists():
         shutil.copyfile(CONTRACT_SRC, dest)
         print(f"copied {CONTRACT_DEST} ({dest.stat().st_size / 1e6:.1f} MB)")
-    qr = payload_valid()
-    render(OUT_DIR / f"Invoice-AlBait-{INVOICE_NO}_real.pdf", invoice_html(price_910=180.00), qr)
-    render(OUT_DIR / f"Invoice-AlBait-{INVOICE_NO}_overpriced.pdf", invoice_html(price_910=200.00), qr)
+    render(OUT_DIR / f"Invoice-AlBait-{INVOICE_NO}_real.pdf", invoice_html(price_910=180.00), payload_valid())
+    over_base = round(sum((200.00 if c == "9.10" else p) * q for c, _, _, p, q, _ in ITEMS), 2)
+    over_vat = round(over_base * 0.15, 2)
+    render(
+        OUT_DIR / f"Invoice-AlBait-{INVOICE_NO}_overpriced.pdf",
+        invoice_html(price_910=200.00),
+        payload_valid(total=round(over_base + over_vat, 2), vat=over_vat),
+    )
     render(OUT_DIR / f"{COC_NO}_ontime.pdf", coc_html(COC_DATE_ONTIME, late=False))
     render(OUT_DIR / f"{COC_NO}_late.pdf", coc_html(COC_DATE_LATE, late=True))
     render(OUT_DIR / f"WorkCommencement-{CONTRACT_NO}.pdf", work_commencement_html())

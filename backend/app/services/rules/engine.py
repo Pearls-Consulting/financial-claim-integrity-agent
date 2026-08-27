@@ -554,6 +554,7 @@ def coc_delay_vs_penalties(claim: Claim, params: dict) -> CheckOutcome:
 
 
 _DATE_RE = re.compile(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})")
+_DMY_RE = re.compile(r"(?<!\d)(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})(?!\d)")
 
 
 def _days_ar(n: int) -> str:
@@ -569,13 +570,19 @@ def _days_ar(n: int) -> str:
 
 
 def _parse_date(value: str) -> date | None:
+    """ISO first; else the printed Saudi day-month-year ("12-07-2026") — the
+    extractor normalises to ISO, this is the belt to its braces: a date the
+    rules cannot parse silently disables every delay check."""
     m = _DATE_RE.search(value or "")
-    if not m:
-        return None
     try:
-        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        if m:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        m = _DMY_RE.search(value or "")
+        if m:
+            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
     except ValueError:
         return None
+    return None
 
 
 def _completion_vs_end(claim: Claim) -> tuple[date | None, date | None, str]:

@@ -55,22 +55,27 @@ function isArabicMark(c: string): boolean {
   return cp === 0x0640 || (cp >= 0x064b && cp <= 0x0652) || cp === 0x0670
 }
 
+// A thousands separator is a comma/space between a digit and EXACTLY three
+// digits ("63,333.33" → "63333.33"); a decimal comma ("2,50") stays, so the
+// printed 2,50% can match the 2.50% candidate. Mirrors the server's _norm.
+function isThousandsSep(s: string, i: number): boolean {
+  const folded = foldChar(s[i])
+  if (folded !== "," && folded !== " " && folded !== "٬") return false
+  if (!isDigit(foldChar(s[i - 1]))) return false
+  for (let k = 1; k <= 3; k++) if (!isDigit(foldChar(s[i + k]))) return false
+  return !isDigit(foldChar(s[i + 4]))
+}
+
 // Normalise for matching while keeping a map back to the ORIGINAL string:
-// Arabic-Indic digits → ASCII, presentation forms → base letters (NFKC),
-// tatweel/harakat dropped, thousands separators between digits dropped
-// ("63,333.33" matches "63333.33"). map[k] = source index of norm char k.
+// Arabic-Indic digits → ASCII, the Arabic decimal separator → ".",
+// presentation forms → base letters (NFKC), tatweel/harakat dropped,
+// thousands separators dropped. map[k] = source index of norm char k.
 function normalizeWithMap(s: string): { norm: string; map: number[] } {
   let norm = ""
   const map: number[] = []
   for (let i = 0; i < s.length; i++) {
-    const folded = foldChar(s[i])
-    if (
-      (folded === "," || folded === " " || folded === "٬") &&
-      isDigit(foldChar(s[i - 1])) &&
-      isDigit(foldChar(s[i + 1]))
-    ) {
-      continue
-    }
+    if (isThousandsSep(s, i)) continue
+    const folded = foldChar(s[i]) === "٫" ? "." : foldChar(s[i])
     for (const c of folded.normalize("NFKC")) {
       if (isArabicMark(c)) continue
       norm += c
@@ -121,6 +126,11 @@ function rawCandidates(raw: string): string[] {
   if (Number.isFinite(n) && /^[\d.,]+$/.test(v)) {
     out.push(n.toFixed(2), String(n))
   }
+  // Decimal-comma printing ("2.50" → "2,50"); not for a 3-digit fraction,
+  // which would read as a thousand.
+  for (const c of [...out]) {
+    if (/\d\.\d/.test(c) && !/\d\.\d{3}(?!\d)/.test(c)) out.push(c.replace(/(\d)\.(?=\d)/g, "$1,"))
+  }
   return out
 }
 
@@ -134,13 +144,32 @@ function buildRawList(value?: string, also?: string[]): string[] {
   return Array.from(new Set(items.filter(Boolean)))
 }
 
-// Word-boundary guard for short candidates ("62" must not match inside "624").
+const NUMERIC_CAND = /^[\d.,:/%\-()]+$/
+
+// A number must be the WHOLE printed number: "89.9" is not inside "189.9" or
+// "89.95", and item "2.14" is not inside clause "3.2.14" or "2.14.1" (a
+// separator + digit on either side continues the number). Short text
+// candidates ("na") need a word boundary.
 function boundaryOk(norm: string, idx: number, cand: string): boolean {
-  if (cand.length >= 4) return true
+  const end = idx + cand.length
   const before = idx > 0 ? norm[idx - 1] : ""
-  const after = idx + cand.length < norm.length ? norm[idx + cand.length] : ""
+  const after = end < norm.length ? norm[end] : ""
+  if (NUMERIC_CAND.test(cand) && /\d/.test(cand)) {
+    if (isDigit(before) || isDigit(after)) return false
+    if (/[./]/.test(before) && idx > 1 && isDigit(norm[idx - 2])) return false
+    if (/[./]/.test(after) && end + 1 < norm.length && isDigit(norm[end + 1])) return false
+    return true
+  }
+  if (cand.length >= 4) return true
   const alnum = (c: string) => /[a-z0-9؀-ۿ]/i.test(c)
   return !alnum(before) && !alnum(after)
+}
+
+// First occurrence of `cand` in `norm` that sits on a proper boundary, else -1.
+function findBounded(norm: string, cand: string): number {
+  let idx = norm.indexOf(cand)
+  while (idx !== -1 && !boundaryOk(norm, idx, cand)) idx = norm.indexOf(cand, idx + 1)
+  return idx
 }
 
 function escapeHtml(s: string): string {
@@ -181,7 +210,7 @@ async function findCandidatePage(
       const page = await pdf.getPage(i)
       const tc = await page.getTextContent()
       const text = normalize(tc.items.map((it) => it.str ?? "").join(" "))
-      if (terms.some((c) => text.includes(c))) return i
+      if (terms.some((c) => findBounded(text, c) !== -1)) return i
     } catch {
       /* skip unreadable page */
     }
@@ -296,59 +325,69 @@ function PdfReader({ request }: { request: PdfViewRequest }) {
   const url = claimFileUrl(request.claimId, request.index)
   const file = React.useMemo(() => ({ url }), [url])
 
-  const rawList = React.useMemo(
-    () => buildRawList(request.highlight, request.highlightAlso),
-    [request.highlight, request.highlightAlso]
-  )
+  // THE value (the number the reviewer clicked) vs its row context (item
+  // code, unit price). The value is what gets found, scrolled to and, on a
+  // scanned page, OCR-located; the context is only marked alongside it and
+  // never decides which page to show — an item code like "2.14" also occurs
+  // as clause numbering on unrelated pages.
+  const rawList = React.useMemo(() => buildRawList(request.highlight), [request.highlight])
+  const alsoRawList = React.useMemo(() => buildRawList(undefined, request.highlightAlso), [request.highlightAlso])
   const anchorList = React.useMemo(
     () => (request.highlightExtra?.trim() ? [request.highlightExtra.trim()] : []),
     [request.highlightExtra]
   )
-  const candidates = React.useMemo(
+  const primaryCandidates = React.useMemo(
     () => Array.from(new Set(rawList.map((c) => normalize(c)).filter(Boolean))),
     [rawList]
   )
-  const primaryCandidates = React.useMemo(
-    () => Array.from(new Set(rawCandidates(request.highlight ?? "").map((c) => normalize(c)).filter(Boolean))),
-    [request.highlight]
+  const alsoCandidates = React.useMemo(
+    () =>
+      Array.from(new Set(alsoRawList.map((c) => normalize(c)).filter(Boolean))).filter(
+        (c) => !primaryCandidates.includes(c)
+      ),
+    [alsoRawList, primaryCandidates]
   )
+  const candidates = React.useMemo(() => [...primaryCandidates, ...alsoCandidates], [primaryCandidates, alsoCandidates])
 
   // Wrap the value in a <mark> inside each text-layer item; matching runs on
   // the normalised copy, then maps back so the ORIGINAL printed text (commas,
-  // Arabic digits) is what gets highlighted.
+  // Arabic digits) is what gets highlighted. The value gets the strong mark
+  // (.cia-pdf-hit); row context a faint one (.cia-pdf-also).
   const textRenderer = React.useCallback(
     (item: { str: string }) => {
       if (!candidates.length) return escapeHtml(item.str)
       const { norm, map } = normalizeWithMap(item.str)
       for (const cand of candidates) {
-        let idx = norm.indexOf(cand)
-        while (idx !== -1 && !boundaryOk(norm, idx, cand)) idx = norm.indexOf(cand, idx + 1)
+        const idx = findBounded(norm, cand)
         if (idx === -1) continue
+        const primary = primaryCandidates.includes(cand)
         const start = map[idx]
         const end = (map[idx + cand.length - 1] ?? item.str.length - 1) + 1
         // Text layer glyphs are transparent over the canvas — the mark's text
         // must stay transparent too, leaving only the tinted background.
+        const cls = primary ? "cia-pdf-hit" : "cia-pdf-also"
+        const bg = primary ? "rgba(250,204,21,0.55)" : "rgba(250,204,21,0.18)"
         return (
           `${escapeHtml(item.str.slice(0, start))}` +
-          `<mark class="cia-pdf-hit" style="color:transparent;background-color:rgba(250,204,21,0.5);border-radius:2px;">` +
+          `<mark class="${cls}" style="color:transparent;background-color:${bg};border-radius:2px;">` +
           `${escapeHtml(item.str.slice(start, end))}</mark>${escapeHtml(item.str.slice(end))}`
         )
       }
       return escapeHtml(item.str)
     },
-    [candidates]
+    [candidates, primaryCandidates]
   )
 
   // Server OCR-locate: ask CU for the value's polygons, jumping to the page it
   // was actually found on. The anchors (verbatim clause) go along as the weak
   // fallback. One shot per open — repeated failures would just re-bill OCR.
   const runCuFallback = React.useCallback(() => {
-    if (cuTried.current || (!rawList.length && !anchorList.length)) return
+    if (cuTried.current || (!rawList.length && !alsoRawList.length && !anchorList.length)) return
     cuTried.current = true
     const target = pageNum
     setCuPage(target)
     setCuLoading(true)
-    locateInDocument(request.claimId, request.index, target, rawList, anchorList)
+    locateInDocument(request.claimId, request.index, target, rawList, alsoRawList, anchorList)
       .then((r) => {
         if (r.found && r.page && r.page !== target) {
           setCuPage(r.page)
@@ -357,7 +396,7 @@ function PdfReader({ request }: { request: PdfViewRequest }) {
         setCuPolys(r.found ? r.polygons : [])
       })
       .finally(() => setCuLoading(false))
-  }, [rawList, anchorList, pageNum, request.claimId, request.index])
+  }, [rawList, alsoRawList, anchorList, pageNum, request.claimId, request.index])
 
   // After the text layer lays out: scroll the hit into view; else search the
   // rest of the document for the value's page and jump there; else fall back
@@ -369,21 +408,20 @@ function PdfReader({ request }: { request: PdfViewRequest }) {
       return
     }
     if (!candidates.length && !anchorList.length) return
-    if (candidates.length && !docSearched.current && pdfRef.current) {
+    // The value is not in this page's text layer. Search the rest of the
+    // document for THE VALUE only (never for the item code — that is how the
+    // reader once landed on an unrelated clause), else OCR-locate it here.
+    if (primaryCandidates.length && !docSearched.current && pdfRef.current) {
       docSearched.current = true
-      const doc = pdfRef.current
-      const findPreferValue = async () => {
-        const byValue = primaryCandidates.length
-          ? await findCandidatePage(doc, primaryCandidates, pageNum)
-          : null
-        return byValue ?? (await findCandidatePage(doc, candidates, pageNum))
-      }
-      findPreferValue().then((found) => {
+      findCandidatePage(pdfRef.current, primaryCandidates, pageNum).then((found) => {
         if (found) setPageNum(found) // re-render → textRenderer highlights there
         else runCuFallback()
       })
       return
     }
+    // Row context found on the cited page: keep it in view while OCR looks
+    // for the value itself (a garbled digit run in the text layer).
+    scrollRef.current?.querySelector(".cia-pdf-also")?.scrollIntoView({ block: "center", behavior: "smooth" })
     runCuFallback()
   }, [candidates, anchorList, primaryCandidates, pageNum, runCuFallback])
 
@@ -514,12 +552,13 @@ function ImageReader({ request }: { request: PdfViewRequest }) {
 
   React.useEffect(() => {
     if (cuTried.current) return
-    const rawList = buildRawList(request.highlight, request.highlightAlso)
+    const rawList = buildRawList(request.highlight)
+    const alsoRawList = buildRawList(undefined, request.highlightAlso)
     const anchors = request.highlightExtra?.trim() ? [request.highlightExtra.trim()] : []
-    if (!rawList.length && !anchors.length) return
+    if (!rawList.length && !alsoRawList.length && !anchors.length) return
     cuTried.current = true
     setCuLoading(true)
-    locateInDocument(request.claimId, request.index, 1, rawList, anchors)
+    locateInDocument(request.claimId, request.index, 1, rawList, alsoRawList, anchors)
       .then((r) => setCuPolys(r.found ? r.polygons : []))
       .finally(() => setCuLoading(false))
   }, [request])

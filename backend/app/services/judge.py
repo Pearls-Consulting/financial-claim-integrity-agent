@@ -112,13 +112,23 @@ class GptJudge:
 
         client = OpenAI(api_key=settings.azure_openai_api_key, base_url=settings.azure_openai_base_url)
         try:
-            response = client.chat.completions.create(
-                model=settings.azure_openai_model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": payload_json},
-                ],
-            )
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": payload_json},
+            ]
+            # The write-up is presentation, not analysis: low reasoning effort
+            # keeps the call short. Fall back to the default if the deployment
+            # rejects the parameter.
+            try:
+                response = client.chat.completions.create(
+                    model=settings.azure_openai_model,
+                    messages=messages,
+                    **({"reasoning_effort": settings.gpt_judge_effort} if settings.gpt_judge_effort else {}),
+                )
+            except Exception:
+                if not settings.gpt_judge_effort:
+                    raise
+                response = client.chat.completions.create(model=settings.azure_openai_model, messages=messages)
             raw = (response.choices[0].message.content or "").strip()
             start, end = raw.find("{"), raw.rfind("}")
             data = json.loads(raw[start : end + 1])

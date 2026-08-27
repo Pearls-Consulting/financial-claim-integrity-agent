@@ -24,6 +24,45 @@ class Settings(BaseSettings):
     azure_cu_analyzer: str = "prebuilt-layout"
     azure_cu_api_version: str = "2025-11-01"
 
+    # --- `gpt` extractor: GPT vision reads the files natively ---------------
+    # The prequalification agent's analyzer-v4 shape: one Responses-API call
+    # per file (big PDFs split into page chunks), every file/chunk in flight
+    # at once, LOW reasoning effort, page provenance on every field. Azure CU
+    # is NOT part of extraction on this engine — it only OCRs the one cited
+    # page when the viewer's text-layer highlight fails (locate.py).
+    gpt_vision_model: str = ""  # empty = azure_openai_model
+    gpt_vision_effort: str = "low"  # Responses-API reasoning effort
+    gpt_vision_render_dpi: int = 200  # pages are sent as images rendered at this DPI (never as PDF)
+    gpt_vision_chunk_pages: int = 5  # pages per call; smaller = more parallel, shorter outputs, better row recall
+    gpt_vision_concurrency: int = 12  # files x chunks x passes in flight; beyond ~12-16 the deployment queues
+    gpt_vision_max_output_tokens: int = 24000  # dense BoQ chunks need room
+    gpt_vision_timeout_seconds: float = 300.0
+    gpt_vision_attachment_max_pages: int = 3  # identity docs: read the first pages only
+    # Short units (<= consensus_max_pages) are read `passes` times concurrently
+    # and majority-voted; a disagreement gets one tie-break read. Catches the
+    # occasional digit slip on an invoice without slowing the run.
+    gpt_vision_passes: int = 2
+    gpt_vision_consensus_max_pages: int = 2
+    # Key-field verify: identifiers and totals (VAT no., invoice/COC number,
+    # dates, amounts) are re-read with a small focused prompt on the header
+    # page and that value WINS. Measured: the schema-wide read transposes a
+    # 15-digit VAT number ~30% of the time; the focused read 0/24.
+    gpt_vision_verify: bool = True
+    # Disk cache of model reads (gpt_vision / gpt_attachments / gpt_reconcile).
+    # Off: every run re-reads the documents — what the demo should show.
+    extraction_cache: bool = False
+    # Text-only reconcile call (invoice<->BoQ item alignment, end date from a
+    # duration + dated anchor). Same model unless overridden.
+    gpt_reconcile_model: str = ""
+    gpt_reconcile_effort: str = "low"
+    # GPT judge write-up: reasoning effort ("" = model default).
+    gpt_judge_effort: str = "low"
+
+    # Evidence locate (CU OCR of ONE rendered page, billed per page): when the
+    # value is not on the cited page, how many pages in total may be OCR'd —
+    # the cited page plus its nearest neighbours, never the whole document.
+    locate_max_pages: int = 3
+
     # --- auth / session ---------------------------------------------------
     # Single-role demo login (the vendor-management specialist who reviews
     # claims). One account, configured here rather than in a users table -

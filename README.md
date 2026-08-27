@@ -22,7 +22,12 @@ cites its normative source, which is the audit-defensibility story.
   checks are deterministic Python (`rules/engine.py`).
 - **ERP is the data source.** Documents live in D365; the demo runs on a
   seeded mock behind the same interface (`services/datasource.py`).
-- **Division of labor** (proven in the prequalification agent): specialist OCR
+- **Reader engines**: `EXTRACTOR_ENGINE=gpt` (GPT vision reads every file
+  natively — chunks and files in parallel, page provenance on every value,
+  analyzer-v4 shape from the prequalification agent; Azure CU is used only by
+  the evidence viewer's highlight fallback, one cited page per click) or the
+  earlier `azure` path (CU Layout OCR of every page + GPT structuring).
+- **Division of labor** (the `azure` engine): specialist OCR
   reads, LLM organizes, **Python validates**, human signs off. Two engine sets:
   `EXTRACTOR_ENGINE=mock` / `JUDGE_ENGINE=mock` run entirely on deterministic
   checks (no AI calls, reproducible — tests are pinned to these);

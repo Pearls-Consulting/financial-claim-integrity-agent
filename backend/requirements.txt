@@ -28,6 +28,9 @@ azure-core>=1.30
 pypdfium2>=4.30
 zxing-cpp>=2.2
 numpy>=1.26
+# The GPT reader sends pages as PNG/JPEG images and the locate fallback
+# rasterizes the cited page: Pillow encodes what PDFium renders.
+Pillow>=10.0
 
 # Phase-2 QR validation (validators/zatca_qr.validate_phase2): ECDSA signature
 # verification over the invoice hash, secp256k1

@@ -26,7 +26,7 @@ export const api = {
   run: async (id: string, gates?: string[]): Promise<RunResult> => {
     const qs = gates?.length ? `?gates=${gates.join(",")}` : ""
     const res = await fetch(`/api/claims/${id}/run${qs}`, { method: "POST" })
-    if (!res.ok) throw await failure(res, `run ${id}`)
+    if (!res.ok) throw await failure(res, `run ${id}`, true)
     return res.json() as Promise<RunResult>
   },
   submit: async (form: FormData): Promise<Claim> => {
@@ -40,7 +40,7 @@ export const api = {
     fd.append("step", String(step))
     await fetch(`/api/claims/${id}/progress`, { method: "POST", body: fd })
   },
-  /** OCR + structure one invoice for form autofill; null = no reader (mock engine). */
+  /** Read one invoice for form autofill; null = no reader (mock engine). */
   extractInvoice: async (file: File): Promise<InvoiceDoc | null> => {
     const fd = new FormData()
     fd.append("invoice", file)
@@ -48,7 +48,7 @@ export const api = {
     if (!res.ok) throw await failure(res, `extract`, true)
     return res.json() as Promise<InvoiceDoc | null>
   },
-  /** OCR + structure one contract/BoQ for the step-2 suggestions (contract
+  /** Read one contract/BoQ for the step-2 suggestions (contract
    *  value, end date); null = no reader (mock engine). */
   extractBoq: async (file: File): Promise<ContractExtract | null> => {
     const fd = new FormData()
@@ -92,19 +92,24 @@ export interface LocateResult {
 }
 
 /** OCR-locate a value on a staged document page — the viewer's fallback for
- *  scanned pages with no text layer. Degrades to found=false on any error. */
+ *  scanned pages with no text layer. `values` = renderings of THE value (found
+ *  first, on the cited page then its neighbours); `also` = row context (item
+ *  code, unit price) tried on the cited page only; `anchors` = the verbatim
+ *  clause, used to pick between several occurrences, then as a last resort.
+ *  Degrades to found=false on any error. */
 export async function locateInDocument(
   claimId: string,
   index: number,
   page: number,
   values: string[],
+  also: string[] = [],
   anchors: string[] = []
 ): Promise<LocateResult> {
   try {
     const res = await fetch(`/api/claims/${claimId}/files/${index}/locate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ page, values, anchors }),
+      body: JSON.stringify({ page, values, also, anchors }),
     })
     if (!res.ok) {
       if (res.status === 401) emitUnauthorized()

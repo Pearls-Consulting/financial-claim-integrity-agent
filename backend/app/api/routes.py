@@ -1,6 +1,8 @@
 import io
 import json
 import mimetypes
+import shutil
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -83,7 +85,14 @@ def run_claim(claim_id: str, gates: str | None = None) -> RunResult:
         unknown = gate_ids - {s.id for s in STAGES}
         if unknown:
             raise HTTPException(status_code=422, detail=f"Unknown gates: {', '.join(sorted(unknown))}")
-    return pipeline.run_claim(claim, gate_ids)
+    try:
+        return pipeline.run_claim(claim, gate_ids)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        # The reader could not produce anything (Azure outage, throttling,
+        # an unreadable file): tell the reviewer, do not dump a stack trace.
+        raise HTTPException(status_code=502, detail=f"Document reading failed — {exc}. Try again in a moment.") from exc
 
 
 @router.get("/claims/{claim_id}/run", response_model=RunResult | None)
@@ -168,7 +177,8 @@ def claim_file(claim_id: str, index: int) -> FileResponse:
 class LocateRequest(BaseModel):
     page: int = 1
     values: list[str]  # candidate renderings of the same value, tried in order
-    anchors: list[str] = []  # weak fallback — the verbatim clause / excerpt
+    also: list[str] = []  # row context (item code, unit price): cited page only, never picks a page
+    anchors: list[str] = []  # the verbatim clause / excerpt: disambiguates, then last resort
 
 
 class LocateResponse(BaseModel):
@@ -190,12 +200,15 @@ def locate_in_file(claim_id: str, index: int, req: LocateRequest) -> LocateRespo
     path = (PROJECT_ROOT / claim.source_files[index].path).resolve()
     if not path.is_relative_to(PROJECT_ROOT) or not path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-    if get_settings().extractor_engine != "azure":
+    # CU is the viewer's fallback on every real engine (gpt | azure) — the
+    # only place it is still called, one rendered page at a time.
+    s = get_settings()
+    if s.extractor_engine == "mock" or not (s.azure_cu_endpoint and s.azure_cu_key):
         return LocateResponse(found=False, polygons=[])
     from app.services.extraction.locate import locate_value_in_document
 
     try:
-        result = locate_value_in_document(path, max(req.page, 1), req.values, anchors=req.anchors)
+        result = locate_value_in_document(path, max(req.page, 1), req.values, also=req.also, anchors=req.anchors)
     except Exception:
         return LocateResponse(found=False, polygons=[])
     return LocateResponse(**result)
@@ -206,21 +219,58 @@ def extract_invoice(invoice: UploadFile = File(...)) -> InvoiceDoc | None:
     """Read one invoice on its own — powers the intake form's autofill.
 
     Null means "no reader available" (mock engine) and the form stays manual.
-    OCR is disk-cached by content hash, so the later full-claim run re-reads
-    this same file for free.
+    The read is disk-cached by content hash, so the later full-claim run
+    re-reads this same file for free.
     """
-    if get_settings().extractor_engine != "azure":
-        return None
-    from app.services.extraction.cu_client import analyze_layout
-    from app.services.extraction.structuring import structure_documents
+    docs = _read_single(invoice, "invoice")
+    return docs.invoice if docs else None
 
-    staged = submissions.stage_file(f"_prefill/{uuid.uuid4().hex[:8]}", invoice, "invoice")
+
+def _read_single(upload: UploadFile, doc_type: str):
+    """One uploaded file → ClaimDocuments on the configured engine; None on
+    the mock engine (no reader)."""
+    engine = get_settings().extractor_engine
+    if engine not in ("gpt", "azure"):
+        return None
+    staged = submissions.stage_file(f"_prefill/{uuid.uuid4().hex[:8]}", upload, doc_type)
     path = PROJECT_ROOT / staged.path
-    result = analyze_layout(path)
-    if not result.ok:
-        raise HTTPException(status_code=422, detail=f"OCR failed: {result.error}")
-    docs = structure_documents([(path.name, "invoice", result.markdown)])
-    return docs.invoice
+    try:
+        if engine == "gpt":
+            from app.services.extraction.gpt_vision import read_file, to_documents
+
+            try:
+                return to_documents(read_file(path, doc_type))
+            except Exception as exc:
+                raise HTTPException(status_code=422, detail=f"Read failed: {exc}") from exc
+        from app.services.extraction.cu_client import analyze_layout
+        from app.services.extraction.structuring import structure_documents
+
+        result = analyze_layout(path)
+        if not result.ok:
+            raise HTTPException(status_code=422, detail=f"OCR failed: {result.error}")
+        return structure_documents([(path.name, doc_type, result.markdown)])
+    finally:
+        _discard_prefill(path)
+
+
+def _discard_prefill(path: Path) -> None:
+    """A prefill copy is read once; the wizard uploads the file again with
+    the submission. Leaving it behind leaks 20 MB per contract pick on a
+    24 GB shared box. Also sweeps batches older than an hour left by
+    earlier builds / interrupted requests."""
+    try:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()  # the per-pick batch dir, if now empty
+    except OSError:
+        pass
+    prefill_root = submissions.UPLOAD_DIR / "_prefill"
+    cutoff = time.time() - 3600
+    try:
+        for batch in prefill_root.iterdir():
+            if batch.is_dir() and batch.stat().st_mtime < cutoff:
+                shutil.rmtree(batch, ignore_errors=True)
+    except OSError:
+        pass
 
 
 class ContractExtract(BaseModel):
@@ -238,18 +288,8 @@ def extract_boq(contract_boq: UploadFile = File(...)) -> ContractExtract | None:
 
     Null means "no reader available" (mock engine).
     """
-    if get_settings().extractor_engine != "azure":
-        return None
-    from app.services.extraction.cu_client import analyze_layout
-    from app.services.extraction.structuring import structure_documents
-
-    staged = submissions.stage_file(f"_prefill/{uuid.uuid4().hex[:8]}", contract_boq, "contract_boq")
-    path = PROJECT_ROOT / staged.path
-    result = analyze_layout(path)
-    if not result.ok:
-        raise HTTPException(status_code=422, detail=f"OCR failed: {result.error}")
-    docs = structure_documents([(path.name, "contract_boq", result.markdown)])
-    return ContractExtract(boq=docs.boq, contract=docs.contract)
+    docs = _read_single(contract_boq, "contract_boq")
+    return ContractExtract(boq=docs.boq, contract=docs.contract) if docs else None
 
 
 @router.post("/extract/attachments", response_model=list[DetectedAttachment])
@@ -258,26 +298,42 @@ def extract_attachments(files: list[UploadFile] = File(...)) -> list[DetectedAtt
     which is the CR, the zakat certificate, the award letter... — and lift
     their printed identity fields (CR number, VAT number, reference no.).
 
-    Azure engine: CU OCR (disk-cached) + one GPT classification call, with a
-    filename heuristic as the safety net. Mock engine: heuristic only, no
-    fields — the demo flow still works, just without extracted values.
+    gpt engine: one GPT vision read per upload (first pages only), all in
+    parallel, cached by content. Azure engine: CU OCR (disk-cached) + one GPT
+    classification call. Both keep a filename heuristic as the safety net.
+    Mock engine: heuristic only, no fields — the demo flow still works, just
+    without extracted values.
     """
-    from app.services.extraction.attachments import classify_attachments, heuristic_doc_key
+    from app.services.extraction.attachments import (
+        classify_attachments,
+        classify_attachments_vision,
+        heuristic_doc_key,
+    )
 
-    if get_settings().extractor_engine != "azure":
+    engine = get_settings().extractor_engine
+    if engine not in ("gpt", "azure"):
         return [
             DetectedAttachment(file_name=f.filename or "file", doc_key=heuristic_doc_key(f.filename or ""))
             for f in files
         ]
-    from app.services.extraction.cu_client import analyze_layout
-
     batch = f"_prefill/{uuid.uuid4().hex[:8]}"
-    markdown_by_file: list[tuple[str, str]] = []
-    for upload in files:
-        staged = submissions.stage_file(batch, upload, "attachment")
-        result = analyze_layout(PROJECT_ROOT / staged.path)
-        markdown_by_file.append((upload.filename or Path(staged.path).name, result.markdown if result.ok else ""))
-    return classify_attachments(markdown_by_file)
+    staged = [(submissions.stage_file(batch, upload, "attachment"), upload.filename) for upload in files]
+    try:
+        if engine == "gpt":
+            return classify_attachments_vision(
+                [PROJECT_ROOT / f.path for f, _ in staged],
+                [name or Path(f.path).name for f, name in staged],
+            )
+        from app.services.extraction.cu_client import analyze_layout
+
+        markdown_by_file: list[tuple[str, str]] = []
+        for f, name in staged:
+            result = analyze_layout(PROJECT_ROOT / f.path)
+            markdown_by_file.append((name or Path(f.path).name, result.markdown if result.ok else ""))
+        return classify_attachments(markdown_by_file)
+    finally:
+        for f, _ in staged:
+            _discard_prefill(PROJECT_ROOT / f.path)
 
 
 @router.post("/submissions", response_model=Claim)

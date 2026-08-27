@@ -1,6 +1,10 @@
 """The `azure` extractor engine: CU Layout OCR -> GPT structuring -> merge.
 
-Division of labor (proven in the prequalification agent):
+The original two-stage path, kept as a fallback: CU reads every file into
+markdown (whole document, billed per page, slow on scanned contracts), then
+GPT organizes the corpus. The `gpt` engine (gpt_extractor.py) supersedes it:
+GPT reads the pages itself, in parallel, with page provenance.
+
 - CU reads the files into faithful markdown (concurrently, disk-cached),
 - the deterministic QR decoder reads barcode payloads off the invoice PDF,
 - GPT only organizes the markdown into the ClaimDocuments schema,
@@ -16,8 +20,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from app.domain.models import Claim, ClaimDocuments
+from app.services.extraction.common import inject_qr, merge_erp
 from app.services.extraction.cu_client import analyze_layout
-from app.services.extraction.qr import extract_from_pdf
 from app.services.extraction.structuring import structure_documents
 
 logger = logging.getLogger(__name__)
@@ -56,30 +60,5 @@ class AzureCuExtractor:
 
         extracted = structure_documents(ocr_ok)
 
-        # Deterministic QR injection: the payload comes from the printed code,
-        # never from the model. Empty means "file scanned, no QR found" — that
-        # absence is itself the intake finding.
-        invoice_files = [p for m, p in files if m.doc_type == "invoice" and p.suffix.lower() == ".pdf"]
-        if extracted.invoice is not None and invoice_files:
-            hits = extract_from_pdf(invoice_files[0])
-            extracted.invoice.qr_payload = hits[0].payload if hits else ""
-
-        # Merge with ERP-owned data.
-        seeded = claim.documents
-        if extracted.invoice is None:
-            extracted.invoice = seeded.invoice
-        if extracted.coc is None:
-            extracted.coc = seeded.coc
-        # The product receipt is ERP-owned: when the ERP has one it is the
-        # authority and always wins; a receipt read from an uploaded delivery
-        # note only fills in when no ERP record exists (wizard submissions).
-        if seeded.receipt is not None:
-            extracted.receipt = seeded.receipt
-        if not extracted.boq:
-            extracted.boq = seeded.boq
-        if extracted.contract is None:
-            extracted.contract = seeded.contract
-        extracted.penalties = seeded.penalties
-        extracted.attachments = seeded.attachments
-        extracted.detected_attachments = seeded.detected_attachments
-        return extracted
+        inject_qr(extracted, [p for m, p in files if m.doc_type == "invoice" and p.suffix.lower() == ".pdf"])
+        return merge_erp(extracted, claim)

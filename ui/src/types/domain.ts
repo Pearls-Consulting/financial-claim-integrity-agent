@@ -54,6 +54,7 @@ export interface InvoiceLine {
   unit_price: number
   quantity: number
   amount: number
+  page?: number // 1-based page the line was read from; 0/undefined = unknown
 }
 
 export interface InvoiceDoc {
@@ -66,6 +67,7 @@ export interface InvoiceDoc {
   vat_exempt: boolean
   qr_payload: string
   lines: InvoiceLine[]
+  page?: number // page carrying the invoice header
 }
 
 export interface CocDoc {
@@ -76,6 +78,7 @@ export interface CocDoc {
   has_stoppage: boolean | null
   has_observations: boolean | null
   delay_days: number
+  page?: number
 }
 
 export interface BoqLine {
@@ -85,12 +88,14 @@ export interface BoqLine {
   unit: string
   unit_price: number
   quantity: number
+  page?: number // 1-based page of the contract/BoQ the row sits on
 }
 
 export interface ReceiptLine {
   item_code: string
   description_ar: string
   quantity: number
+  page?: number
 }
 
 /** إيصال استلام المنتجات — the D365 product receipt (procedure step 5). */
@@ -98,6 +103,7 @@ export interface ReceiptDoc {
   receipt_no: string
   receipt_date: string
   lines: ReceiptLine[]
+  page?: number
 }
 
 /** One penalty clause as PRINTED in the contract — the contract's TERMS, not
@@ -121,6 +127,7 @@ export interface ContractDoc {
   end_date: string
   value_base: number
   penalty_terms: PenaltyTerm[]
+  page?: number // page carrying the contract header (number, dates, value)
 }
 
 /** What one contract/BoQ read yields for the step-2 suggestions. */
@@ -141,6 +148,7 @@ export interface DetectedAttachment {
   file_name: string
   doc_key: string // a required-attachment key, or "other"
   fields: Record<string, string>
+  page?: number // page the identity fields were read from
 }
 
 export interface ClaimDocuments {

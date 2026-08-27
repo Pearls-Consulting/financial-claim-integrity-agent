@@ -13,9 +13,13 @@ PDFium before the CU call. That gives a single code path for scanned, rotated
 and digital pages alike — PDFium applies the page's /Rotate exactly like the
 viewer's pdf.js does, so the fractions line up on screen by construction.
 
-Cost is bounded: CU runs at most once per (document content, page) — the
-layout is cached on disk keyed by the file's content hash. Documents are
-immutable, so the cache never invalidates.
+Cost is bounded two ways: CU runs at most once per (document content, page) —
+the layout is cached on disk keyed by the file's content hash, and documents
+are immutable so the cache never invalidates — and a lookup never OCRs the
+whole document: the extractor cites the page every value was read from, so
+the fallback OCRs that page and at most its nearest neighbours
+(LOCATE_MAX_PAGES, default 3). CU bills per page; the 76-page contract must
+cost one page per evidence click, not 76.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
+from app.services.extraction.pdfium_lock import PDFIUM_LOCK
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +60,11 @@ def _norm(s: str) -> str:
     Arabic-Indic digits → ASCII; in-number separators dropped; NFKC; Perso-
     Arabic letter variants unified; tatweel/harakat dropped; whitespace removed
     (CU emits per-word tokens); lower-cased."""
-    s = (s or "").translate(_AR_DIGITS)
-    s = re.sub(r"(?<=\d)[,\s٬٫](?=\d)", "", s)
+    s = (s or "").translate(_AR_DIGITS).replace("٬", ",").replace("٫", ".")
+    # A thousands separator is a comma/space followed by EXACTLY three digits
+    # ("23,115,000" → "23115000"); a decimal comma ("2,50") stays, so the
+    # printed 2,50% can match 2.50%.
+    s = re.sub(r"(?<=\d)[,\s](?=\d{3}(?!\d))", "", s)
     s = unicodedata.normalize("NFKC", s)
     s = s.translate(_AR_LETTERS)
     s = _MARKS.sub("", s)
@@ -83,17 +91,18 @@ def _render_page_png(doc_path: Path, page: int, dpi: int = 200) -> bytes:
 
     import pypdfium2 as pdfium
 
-    pdf = pdfium.PdfDocument(str(doc_path))
-    try:
-        pg = pdf[page - 1]
+    with PDFIUM_LOCK:  # PDFium is not thread-safe (a reader run may be rendering)
+        pdf = pdfium.PdfDocument(str(doc_path))
         try:
-            bitmap = pg.render(scale=dpi / 72.0)
-            img = bitmap.to_pil()
-            bitmap.close()
+            pg = pdf[page - 1]
+            try:
+                bitmap = pg.render(scale=dpi / 72.0)
+                img = bitmap.to_pil()
+                bitmap.close()
+            finally:
+                pg.close()
         finally:
-            pg.close()
-    finally:
-        pdf.close()
+            pdf.close()
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
@@ -103,11 +112,12 @@ def _page_count(doc_path: Path) -> int:
     try:
         import pypdfium2 as pdfium
 
-        pdf = pdfium.PdfDocument(str(doc_path))
-        try:
-            return len(pdf)
-        finally:
-            pdf.close()
+        with PDFIUM_LOCK:
+            pdf = pdfium.PdfDocument(str(doc_path))
+            try:
+                return len(pdf)
+            finally:
+                pdf.close()
     except Exception:
         return 0
 
@@ -202,22 +212,63 @@ def _on_boundary(norm: str, owner: list[int], idx: int, end: int) -> bool:
     return left and right
 
 
-def _match(items: list[dict[str, Any]], needle: str) -> list[list[tuple[float, float]]]:
-    """Find `needle` (already normalised) as a contiguous run of item contents;
-    return the polygons of the items that span the match. Short needles must
-    sit on a word boundary."""
+_NUMERIC_NEEDLE = re.compile(r"^[\d.,:/%\-()]+$")
+
+
+def _is_numeric(needle: str) -> bool:
+    return bool(needle) and bool(_NUMERIC_NEEDLE.match(needle)) and any(c.isdigit() for c in needle)
+
+
+def _on_digit_boundary(norm: str, owner: list[int], idx: int, end: int, *, allow_fraction: bool = False) -> bool:
+    """A number must be the WHOLE printed number: "89.9" is not inside "189.9"
+    or "89.95", and item "2.14" is not inside clause "3.2.14" or "2.14.1"
+    (a separator + digit on either side continues the number). Only text of
+    the SAME item counts — items are flattened without separators, so the
+    previous word's last digit must not veto a match."""
+    if idx > 0 and owner[idx - 1] == owner[idx]:
+        if norm[idx - 1].isdigit():
+            return False
+        if norm[idx - 1] in "./" and idx > 1 and owner[idx - 2] == owner[idx] and norm[idx - 2].isdigit():
+            return False
+    if end < len(norm) and owner[end] == owner[end - 1]:
+        if norm[end].isdigit():
+            return False
+        # An integer digit run may continue into a fraction ("7017614" in
+        # "7017614.10"); an exact needle may not ("2.14" in "2.14.1").
+        if not allow_fraction and norm[end] in "./" and end + 1 < len(norm) and owner[end + 1] == owner[end - 1] and norm[end + 1].isdigit():
+            return False
+    return True
+
+
+Polys = list[list[tuple[float, float]]]
+
+
+def _match_all(items: list[dict[str, Any]], needle: str) -> list[Polys]:
+    """Every occurrence of `needle` (already normalised) as a contiguous run
+    of item contents; each occurrence is the polygons of the items spanning
+    it. Short needles must sit on a word boundary; numeric needles must be
+    the whole printed number (digit boundary)."""
     norm, owner = _flatten(items)
     short = len(needle) < 4
+    numeric = _is_numeric(needle)
+    out: list[Polys] = []
     start = 0
     while True:
         idx = norm.find(needle, start)
         if idx == -1:
-            return []
+            return out
         end = idx + len(needle)
-        if not short or _on_boundary(norm, owner, idx, end):
+        ok = (not short or _on_boundary(norm, owner, idx, end)) and (not numeric or _on_digit_boundary(norm, owner, idx, end))
+        if ok:
             i0, i1 = owner[idx], owner[end - 1]
-            return [items[i]["poly"] for i in range(i0, i1 + 1)]
+            out.append([items[i]["poly"] for i in range(i0, i1 + 1)])
         start = idx + 1
+
+
+def _match(items: list[dict[str, Any]], needle: str) -> Polys:
+    """First occurrence (see _match_all)."""
+    occ = _match_all(items, needle)
+    return occ[0] if occ else []
 
 
 def _rtl_percent(value: str) -> str | None:
@@ -244,23 +295,29 @@ def _value_digits(value: str) -> str:
     return re.split(r"[.٫/]", m.group(0))[0].lstrip("0")
 
 
-def _match_number(items: list[dict[str, Any]], digits: str) -> list[list[tuple[float, float]]]:
+def _match_number_all(items: list[dict[str, Any]], digits: str) -> list[Polys]:
     """Locate an amount by its significant INTEGER digits on a digit boundary —
     finds "7,017,614.10" whether printed "٧٬٠١٧٬٦١٤٫١٠" or "7017614/10".
     Only for runs ≥ 4 digits (shorter is too ambiguous)."""
     if len(digits) < 4:
         return []
     norm, owner = _flatten(items)
+    out: list[Polys] = []
     start = 0
     while True:
         idx = norm.find(digits, start)
         if idx == -1:
-            return []
+            return out
         end = idx + len(digits)
-        if (idx == 0 or not norm[idx - 1].isdigit()) and (end >= len(norm) or not norm[end].isdigit()):
+        if _on_digit_boundary(norm, owner, idx, end, allow_fraction=True):
             i0, i1 = owner[idx], owner[end - 1]
-            return [items[i]["poly"] for i in range(i0, i1 + 1)]
+            out.append([items[i]["poly"] for i in range(i0, i1 + 1)])
         start = idx + 1
+
+
+def _match_number(items: list[dict[str, Any]], digits: str) -> Polys:
+    occ = _match_number_all(items, digits)
+    return occ[0] if occ else []
 
 
 _EDGE_PUNCT = "،,.:;()[]{}«»\"'“”‘’-—…"
@@ -274,9 +331,7 @@ def _word_tokens(value: str) -> list[str]:
     return [t for t in (_tok(w) for w in re.split(r"\s+", value or "")) if len(t) >= 2]
 
 
-def _match_fuzzy(
-    items: list[dict[str, Any]], values: list[str], *, gap: int = 2
-) -> list[list[tuple[float, float]]]:
+def _match_fuzzy(items: list[dict[str, Any]], values: list[str], *, gap: int = 2) -> Polys:
     """Fallback for long phrases OCR transcribed imperfectly: highlight the run
     of a value's own words covering the most DISTINCT tokens (gap-tolerant).
     Fires only for multi-word values (≥3 distinctive words)."""
@@ -319,38 +374,118 @@ def _locatable(values: list[str]) -> bool:
     return not all(_norm(v) in _NON_LITERAL for v in values if (v or "").strip())
 
 
-def locate_value_on_page(doc_path: Path, page: int, values: list[str]) -> dict[str, Any]:
-    """Locate any of `values` on `page`; return {found, polygons} with
-    page-relative fractional coordinates."""
-    if not _locatable(values):
-        return {"found": False, "polygons": []}
-    needles = [n for n in (_norm(v) for v in values) if n]
-    for v in values:  # RTL pages print "28%" as "%28" — try that too
+def _decimal_comma(value: str) -> str | None:
+    """"2.50" as an Arabic/European page prints it: "2,50". Not for a 3-digit
+    fraction ("1.500" → "1,500" would read as a thousand)."""
+    if not re.search(r"\d\.\d", value or "") or re.search(r"\d\.\d{3}(?!\d)", value):
+        return None
+    return re.sub(r"(?<=\d)\.(?=\d)", ",", value)
+
+
+def _needles(values: list[str]) -> list[str]:
+    """Normalised search forms of the values, in priority order: as given,
+    then the RTL percent form ("28%" printed "%28"), then the decimal-comma
+    form ("2.50%" printed "2,50%")."""
+    forms: list[str] = list(values)
+    for v in values:
         swapped = _rtl_percent(v)
-        if swapped and _norm(swapped) not in needles:
-            needles.append(_norm(swapped))
-    if not needles:
+        if swapped:
+            forms.append(swapped)
+    for v in list(forms):
+        comma = _decimal_comma(v)
+        if comma:
+            forms.append(comma)
+    needles: list[str] = []
+    for f in forms:
+        n = _norm(f)
+        if n and n not in needles:
+            needles.append(n)
+    return needles
+
+
+def _centroid(polys: Polys) -> tuple[float, float]:
+    pts = [pt for poly in polys for pt in poly]
+    if not pts:
+        return (0.0, 0.0)
+    return (sum(x for x, _ in pts) / len(pts), sum(y for _, y in pts) / len(pts))
+
+
+def _nearest(occurrences: list[Polys], ref: Polys | None) -> Polys:
+    """The occurrence closest to the reference region (the matched anchor
+    clause), else the first one."""
+    if not occurrences:
+        return []
+    if not ref:
+        return occurrences[0]
+    rx, ry = _centroid(ref)
+    return min(occurrences, key=lambda occ: (lambda c: (c[0] - rx) ** 2 + (c[1] - ry) ** 2)(_centroid(occ)))
+
+
+def _find_anchor(layout: dict[str, Any], anchors: list[str]) -> Polys:
+    """Where the verbatim clause/excerpt sits on the page — exact run first,
+    then the fuzzy word-run. Used to choose BETWEEN several occurrences of
+    the value, never instead of it."""
+    for needle in _needles(anchors):
+        polys = _match(layout["words"], needle) or _match(layout["lines"], needle)
+        if polys:
+            return polys
+    return _match_fuzzy(layout["words"], anchors)
+
+
+def _find_value(layout: dict[str, Any], values: list[str], *, anchor: Polys | None) -> Polys:
+    """The matching ladder for ONE value on ONE page, in priority order:
+    exact run in words (line-level only for text — a number found inside a
+    line must be the word, never the whole line); the integer digit run of
+    an amount; a fuzzy word-run for long phrases. Among several occurrences,
+    the one nearest the anchor clause wins."""
+    for needle in _needles(values):
+        occ = _match_all(layout["words"], needle)
+        if not occ and not _is_numeric(needle):
+            occ = _match_all(layout["lines"], needle)
+        if occ:
+            return _nearest(occ, anchor)
+    for v in values:  # amounts: retry on the integer digit run alone
+        digits = _value_digits(v)
+        if digits:
+            occ = _match_number_all(layout["words"], digits)
+            if occ:
+                return _nearest(occ, anchor)
+    return _match_fuzzy(layout["words"], values)
+
+
+def locate_value_on_page(
+    doc_path: Path, page: int, values: list[str], *, anchors: list[str] | None = None
+) -> dict[str, Any]:
+    """Locate any of `values` on `page`; return {found, polygons} with
+    page-relative fractional coordinates. `anchors` (the verbatim clause the
+    value came from) only disambiguate between several occurrences."""
+    if not _locatable(values) or not _needles(values):
         return {"found": False, "polygons": []}
     layout = _get_page_layout(doc_path, page)
     w, h = layout["w"], layout["h"]
     if not w or not h:
         return {"found": False, "polygons": []}
-    polys: list[list[tuple[float, float]]] = []
-    for needle in needles:
-        polys = _match(layout["words"], needle) or _match(layout["lines"], needle)
-        if polys:
-            break
-    if not polys:  # amounts: retry on the integer digit run alone
-        for v in values:
-            digits = _value_digits(v)
-            if digits:
-                polys = _match_number(layout["words"], digits) or _match_number(layout["lines"], digits)
-                if polys:
-                    break
-    if not polys:
-        polys = _match_fuzzy(layout["words"], values)
+    anchor = _find_anchor(layout, anchors) if anchors else None
+    polys = _find_value(layout, values, anchor=anchor)
     frac = [[{"x": x / w, "y": y / h} for (x, y) in poly] for poly in polys]
     return {"found": bool(frac), "polygons": frac}
+
+
+def scan_order(page: int, total: int, max_pages: int) -> list[int]:
+    """Pages to try, nearest first: the cited page, then its neighbours
+    outward (p-1, p+1, p-2, ...), at most `max_pages` in total."""
+    total = max(total, 1)
+    page = min(max(page, 1), total)
+    order = [page]
+    step = 1
+    limit = max(1, max_pages)
+    while len(order) < limit and (page - step >= 1 or page + step <= total):
+        if page - step >= 1:
+            order.append(page - step)
+        if page + step <= total and len(order) < limit:
+            order.append(page + step)
+        step += 1
+    return order
 
 
 def locate_value_in_document(
@@ -358,38 +493,44 @@ def locate_value_in_document(
     page: int,
     values: list[str],
     *,
+    also: list[str] | None = None,
     anchors: list[str] | None = None,
-    max_scan_pages: int = 80,
+    max_scan_pages: int | None = None,
 ) -> dict[str, Any]:
-    """Locate any of `values` on `page`; when it is NOT there, search the rest
-    of the document (bounded, early-stop, one disk-cached OCR per page) and
-    return the page it was found on: {found, polygons, page}.
+    """Find the VALUE first, everything else after — {found, polygons, page}.
 
-    ``anchors`` (the verbatim clause / excerpt) is deliberately tried LAST —
-    an excerpt usually leads with the field's label, and searching it first
-    would highlight the caption instead of the value."""
+    1. the value (any of its renderings) on the cited page, then on its
+       nearest neighbours (bounded by LOCATE_MAX_PAGES; one disk-cached OCR
+       per page) — never the whole document: the page comes from the
+       extractor's provenance, so a miss is an off-by-one, not unknown;
+    2. `also` — the row's item code etc. — on the CITED PAGE ONLY: it
+       confirms the row when the number itself could not be matched, and
+       never chooses a page (an item code like "2.14" matches clause
+       numbering on unrelated pages — the live-demo blunder);
+    3. `anchors` — the verbatim clause / excerpt — last, as a value in its
+       own right, on the cited page and neighbours. While looking for the
+       value they only disambiguate between several occurrences on a page.
+    """
     scan_ok = doc_path.suffix.lower() not in _IMAGE_EXTS
+    budget = get_settings().locate_max_pages if max_scan_pages is None else max_scan_pages
+    pages = scan_order(page, _page_count(doc_path), budget) if scan_ok else [page]
 
-    def find(terms: list[str], *, doc_wide: bool) -> dict[str, Any] | None:
-        r = locate_value_on_page(doc_path, page, terms)
-        if r["found"]:
-            return {**r, "page": page}
-        if not doc_wide or not scan_ok or not _locatable(terms):
+    def find(terms: list[str], on: list[int], *, anchors_: list[str] | None = None) -> dict[str, Any] | None:
+        if not terms or not _locatable(terms):
             return None
-        cap = min(_page_count(doc_path) or 1, max(1, max_scan_pages))
-        for p in range(1, cap + 1):
-            if p == page:
-                continue
-            r = locate_value_on_page(doc_path, p, terms)
+        for p in on:
+            r = locate_value_on_page(doc_path, p, terms, anchors=anchors_)
             if r["found"]:
                 return {**r, "page": p}
         return None
 
-    hit = find(values, doc_wide=True)
+    hit = find(values, pages, anchors_=anchors)
     if hit:
         return hit
-    if anchors:
-        hit = find(anchors, doc_wide=True)
-        if hit:
-            return hit
-    return {**locate_value_on_page(doc_path, page, values), "page": page}
+    hit = find(list(also or []), pages[:1])
+    if hit:
+        return hit
+    hit = find(list(anchors or []), pages)
+    if hit:
+        return hit
+    return {"found": False, "polygons": [], "page": pages[0]}

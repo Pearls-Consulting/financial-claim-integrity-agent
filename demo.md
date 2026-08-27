@@ -19,7 +19,7 @@ finding. The human keeps approve/reject authority.
 ## 1. Setup (do this before the meeting)
 
 ```bash
-# backend (http://localhost:8000) — .env: EXTRACTOR_ENGINE=azure, JUDGE_ENGINE=gpt
+# backend (http://localhost:8000) — .env: EXTRACTOR_ENGINE=gpt, JUDGE_ENGINE=gpt
 cd backend && .venv/Scripts/python -m uvicorn app.main:app --port 8000
 
 # ui (http://localhost:5173)
@@ -33,7 +33,7 @@ cd ui && npm run dev
       — 7 ERP-looking rows (approved / rejected / in-progress / not started)
       so استلام المطالبات reads like a live D365 queue. They're read-only set
       dressing; don't open them on purpose.
-- [ ] `.env` has the Azure keys; OCR of the demo files is **disk-cached**
+- [ ] `.env` has the Azure keys; every read of the demo files is **disk-cached** (`backend/.cache/gpt_vision`)
       (`backend/.cache/cu/`), so do one full dry run the day before — the
       live demo then re-reads the same files instantly and only the GPT
       structuring/judge calls hit the network.

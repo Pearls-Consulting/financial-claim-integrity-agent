@@ -12,14 +12,15 @@ under a process-wide lock; zxing decodes outside it on copied arrays.
 from __future__ import annotations
 
 import logging
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from app.services.extraction.pdfium_lock import PDFIUM_LOCK
+
 logger = logging.getLogger(__name__)
 
-_PDFIUM_LOCK = threading.Lock()
+_PDFIUM_LOCK = PDFIUM_LOCK  # shared with the GPT reader and the evidence locate
 _RENDER_DPI = 300  # government QRs are small; 300 DPI reads reliably where 200 drops some
 _MAX_PAGES = 12
 

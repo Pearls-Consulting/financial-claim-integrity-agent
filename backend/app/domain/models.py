@@ -62,6 +62,7 @@ class BoqLine(BaseModel):
     unit: str = ""
     unit_price: float
     quantity: float
+    page: int = 0  # 1-based page of the contract/BoQ document the line sits on; 0 = unknown
 
 
 class InvoiceLine(BaseModel):
@@ -70,6 +71,7 @@ class InvoiceLine(BaseModel):
     unit_price: float
     quantity: float
     amount: float
+    page: int = 0  # 1-based page of the invoice the line sits on; 0 = unknown
 
 
 class InvoiceDoc(BaseModel):
@@ -84,6 +86,7 @@ class InvoiceDoc(BaseModel):
     vat_exempt: bool = False
     qr_payload: str = ""  # base64 TLV from the printed QR; "" = no QR found
     lines: list[InvoiceLine] = Field(default_factory=list)
+    page: int = 0  # 1-based page carrying the invoice header (number, totals); 0 = unknown
 
 
 class CocDoc(BaseModel):
@@ -96,12 +99,14 @@ class CocDoc(BaseModel):
     has_stoppage: bool | None = None  # هل يوجد إيقاف و إعادة استئناف؟
     has_observations: bool | None = None  # هل هناك ملاحظات على التنفيذ؟
     delay_days: int = 0
+    page: int = 0  # 1-based page carrying the COC header; 0 = unknown
 
 
 class ReceiptLine(BaseModel):
     item_code: str
     description_ar: str = ""
     quantity: float  # quantity accepted for this claim period
+    page: int = 0  # 1-based page of the delivery note the line sits on; 0 = unknown
 
 
 class ReceiptDoc(BaseModel):
@@ -112,6 +117,7 @@ class ReceiptDoc(BaseModel):
     receipt_no: str = ""
     receipt_date: str = ""
     lines: list[ReceiptLine] = Field(default_factory=list)
+    page: int = 0  # 1-based page carrying the receipt header; 0 = unknown
 
 
 class PenaltyTerm(BaseModel):
@@ -140,6 +146,7 @@ class ContractDoc(BaseModel):
     end_date: str = ""  # contractual completion / delivery date
     value_base: float = 0.0
     penalty_terms: list[PenaltyTerm] = Field(default_factory=list)
+    page: int = 0  # 1-based page carrying the contract header (number, dates, value); 0 = unknown
 
 
 class Penalty(BaseModel):
@@ -168,6 +175,7 @@ class DetectedAttachment(BaseModel):
     file_name: str
     doc_key: str  # a prefinance required-attachment key, or "other"
     fields: dict[str, str] = Field(default_factory=dict)  # cr_number, vat_number, ...
+    page: int = 0  # 1-based page the identity fields were read from; 0 = unknown
 
 
 class ClaimDocuments(BaseModel):

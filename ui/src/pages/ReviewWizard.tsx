@@ -163,7 +163,7 @@ const STEP_LABELS: { no: StepNo; en: string; ar: string; icon: React.ElementType
 /** Loader narration per step — what the pipeline is actually doing. */
 const RUN_PHASES: Record<GateStepNo, { en: string; ar: string }[]> = {
   1: [
-    { en: "Reading the tax invoice (Layout OCR)", ar: "قراءة الفاتورة الضريبية (تعرف ضوئي)" },
+    { en: "Reading the tax invoice", ar: "قراءة الفاتورة الضريبية" },
     { en: "Structuring extracted fields", ar: "هيكلة الحقول المستخرجة" },
     { en: "Decoding & verifying the ZATCA QR", ar: "فك رمز QR والتحقق منه وفق متطلبات هيئة الزكاة والضريبة" },
     { en: "Intake & authenticity rules", ar: "قواعد الاستلام والتحقق من الصحة" },
@@ -264,7 +264,11 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
     setBoqExtracting(true)
     try {
       const read = await api.extractBoq(f)
-      const total = (read?.boq ?? []).reduce((sum, l) => sum + l.unit_price * l.quantity, 0)
+      // The contract's own printed pre-VAT value is the ceiling; the summed
+      // BoQ lines only stand in when no header value was read (a bare BoQ
+      // upload) — a long BoQ's sum carries recap/duplicate rows.
+      const printed = read?.contract?.value_base ?? 0
+      const total = printed > 0 ? printed : (read?.boq ?? []).reduce((sum, l) => sum + l.unit_price * l.quantity, 0)
       if (total > 0) {
         if (!(parseFloat(fields.contract_value) > 0)) {
           setFields((prev) => ({ ...prev, contract_value: total.toFixed(2) }))
@@ -546,7 +550,7 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
       <h2 className="text-sm font-semibold">{claim?.id ?? t("Submitting claim…", "جارٍ إرسال المطالبة…")}</h2>
       <p className="text-muted-foreground mt-0.5 text-xs">
         {t(
-          "Specialist OCR reads, the model organizes, deterministic rules validate.",
+          "The model reads the pages, deterministic rules validate, the reviewer decides.",
           "القراءة بالتعرف الضوئي، والتنظيم بالنموذج، والتحقق بقواعد حتمية."
         )}
       </p>
@@ -718,7 +722,7 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
               ro
                 ? t("Staged from the ERP attachments.", "مرفقة من نظام تخطيط الموارد.")
                 : t(
-                    "Start here — the agent OCR-reads the invoice, prefills the claim fields below, and decodes its ZATCA QR to verify authenticity.",
+                    "Start here — the agent reads the invoice, prefills the claim fields below, and decodes its ZATCA QR to verify authenticity.",
                     "ابدأ من هنا — يقرأ الوكيل الفاتورة ويعبّئ حقول المطالبة أدناه، ويفك رمز الاستجابة السريعة (QR) للتحقق من صحتها."
                   )
             }

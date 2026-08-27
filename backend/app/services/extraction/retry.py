@@ -7,8 +7,11 @@ re-raised unchanged so call sites keep their error contract.
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Callable, TypeVar
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -23,6 +26,9 @@ def with_retries(fn: Callable[[], T], *, attempts: int = 3, backoff_seconds: flo
             last_exc = exc
             if attempt == attempts:
                 break
+            # Visible in the logs: a burst of these means the Azure deployment
+            # is throttling (429) and the reader's concurrency is too high.
+            logger.warning("retry %d/%d after %s: %s", attempt, attempts, type(exc).__name__, str(exc)[:200])
             time.sleep(backoff_seconds * (2 ** (attempt - 1)))
     assert last_exc is not None
     raise last_exc

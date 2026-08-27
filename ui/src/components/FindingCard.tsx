@@ -151,6 +151,29 @@ const EVIDENCE_LABELS: Record<string, { en: string; ar: string }> = {
 
 const HIDDEN_LEAVES = /(^|\.)(bidi_normalized|has_zatca_stamp|status)$/
 
+/** The page the extractor read a leaf's value from: a line-level leaf (a
+ *  BoQ / invoice / receipt row identified by its item code) cites the row's
+ *  page; anything else cites the document header's page. 0 = unknown. */
+function pageFor(docType: string | null, leaf: Leaf, extracted?: ClaimDocuments | null): number {
+  if (!docType || !extracted) return 0
+  const item = leaf.siblings["item"] ?? leaf.siblings["item_code"]
+  const code = typeof item === "string" || typeof item === "number" ? String(item) : ""
+  const rowPage = <T extends { item_code: string; page?: number }>(rows: T[] | undefined): number =>
+    (code && rows?.find((r) => r.item_code === code)?.page) || 0
+  switch (docType) {
+    case "invoice":
+      return rowPage(extracted.invoice?.lines) || extracted.invoice?.page || 0
+    case "contract_boq":
+      return rowPage(extracted.boq) || extracted.contract?.page || 0
+    case "coc":
+      return extracted.coc?.page || 0
+    case "delivery_note":
+      return rowPage(extracted.receipt?.lines) || extracted.receipt?.page || 0
+    default:
+      return 0
+  }
+}
+
 export function FindingCard({
   finding,
   claim,
@@ -206,7 +229,7 @@ export function FindingCard({
       claimId: claim.id,
       index,
       fileName: file.path.split("/").pop(),
-      page: term?.page || undefined,
+      page: term?.page || pageFor(docType, leaf, extracted) || undefined,
       highlight,
       highlightAlso: also,
       highlightExtra: term?.text_ar || undefined,

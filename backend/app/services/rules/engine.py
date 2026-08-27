@@ -21,7 +21,7 @@ from typing import Callable
 
 import yaml
 
-from app.domain.models import Claim, ClaimType, ContractKind, Finding, GateRun, RuleSource, Severity
+from app.domain.models import PenaltyTerm, Claim, ClaimType, ContractKind, Finding, GateRun, RuleSource, Severity
 from app.services.validators import zatca_qr
 
 RULEPACK_DIR = Path(__file__).parent / "rulepacks"
@@ -672,9 +672,18 @@ def penalties_vs_contract_terms(claim: Claim, params: dict) -> CheckOutcome:
             detail_en="No penalty clause read from the contract — nothing to measure the penalty record against.",
             detail_ar="لم تُقرأ بنود غرامات من العقد — لا يوجد مرجع تعاقدي لمطابقة سجل الغرامات.",
         )
-    term = max(terms, key=lambda t: (bool(t.per), t.rate_percent))  # prefer a computable rate
     cap_percent = max((t.cap_percent for t in terms), default=0.0)
     basis_amount = claim.contract_value or (contract.value_base if contract else 0.0)
+
+    def _contract_basis(t: PenaltyTerm) -> bool:
+        return not t.basis or "عقد" in t.basis or "contract" in t.basis.lower()
+
+    # The clause to cite: a rate the check can actually COMPUTE with (per
+    # day/week of the contract value) beats everything; otherwise the
+    # headline clause — the highest rate, its own cap first. A line-scoped
+    # "2.5% per week of the delayed works" must not displace "up to 10% of
+    # the line value, total capped at 20%" just because it names a period.
+    term = max(terms, key=lambda t: (bool(t.per) and _contract_basis(t), bool(t.cap_percent), t.rate_percent))
     penalties_total = round(sum(p.amount for p in claim.documents.penalties), 2)
     end, done, done_label = _completion_vs_end(claim)
 
@@ -690,7 +699,7 @@ def penalties_vs_contract_terms(claim: Claim, params: dict) -> CheckOutcome:
     # CONTRACT VALUE. A line-scoped basis (قيمة البند / الأعمال المتأخرة)
     # cannot be extrapolated to the whole contract — the clause is cited and
     # a penalty demanded, but no figure is invented.
-    basis_is_contract = not term.basis or "عقد" in term.basis or "contract" in term.basis.lower()
+    basis_is_contract = _contract_basis(term)
     evidence: dict = {
         "contract_penalty": {
             "rate_percent": term.rate_percent,

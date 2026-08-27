@@ -1,33 +1,7 @@
 """Gate 3 (acceptance & three-way) and gate 4 (final check) — kind-aware
 acceptance, date-inferred delay, and the contract's own penalty clauses."""
 
-from datetime import date
-
-from app.services.rules.engine import _parse_date
-
-
-def test_rule_date_parser_accepts_printed_day_month_year():
-    assert _parse_date("2026-07-12") == date(2026, 7, 12)
-    assert _parse_date("12-07-2026") == date(2026, 7, 12)
-    assert _parse_date("12/07/2026") == date(2026, 7, 12)
-    assert _parse_date("خمسة أشهر من تاريخ محضر بدء المشروع") is None
-    assert _parse_date("") is None
-
-
 from app.domain.models import CocDoc, ContractDoc, ContractKind, Penalty, PenaltyTerm, ReceiptDoc, Severity
-from datetime import date
-
-from app.services.rules.engine import _parse_date
-
-
-def test_rule_date_parser_accepts_printed_day_month_year():
-    assert _parse_date("2026-07-12") == date(2026, 7, 12)
-    assert _parse_date("12-07-2026") == date(2026, 7, 12)
-    assert _parse_date("12/07/2026") == date(2026, 7, 12)
-    assert _parse_date("خمسة أشهر من تاريخ محضر بدء المشروع") is None
-    assert _parse_date("") is None
-
-
 from app.services.datasource import get_source
 from datetime import date
 

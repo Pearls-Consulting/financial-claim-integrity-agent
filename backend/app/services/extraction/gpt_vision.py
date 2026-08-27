@@ -571,8 +571,26 @@ def _real_boq_rows(rows: Any) -> list[Any]:
 
 
 # A penalty rate is per unit of delay time only when the clause SAYS so.
-_PER_DAY = re.compile(r"كل\s*\d*\s*(يوم|أيام|ايام)|يومي|باليوم|/\s*(يوم|اليوم)|per\s+day|daily", re.I)
-_PER_WEEK = re.compile(r"كل\s*\d*\s*(أسبوع|اسبوع|أسابيع|اسابيع)|أسبوعي|اسبوعي|/\s*(أسبوع|اسبوع)|per\s+week|weekly", re.I)
+_PER_N_DAYS = re.compile(r"كل\s*(\d+)\s*(يوم|أيام|ايام)|every\s+(\d+)\s+days?", re.I)
+_PER_DAY = re.compile(r"كل\s*(يوم|أيام|ايام)|يومي|باليوم|/\s*(يوم|اليوم)|per\s+day|daily", re.I)
+_PER_WEEK = re.compile(r"كل\s*(أسبوع|اسبوع)|أسبوعي|اسبوعي|/\s*(أسبوع|اسبوع)|per\s+week|weekly", re.I)
+
+
+def clause_period(text: str) -> str:
+    """"day" / "week" / "" from the clause's own wording. "عن كل 7 أيام" is
+    a weekly rate; a period of any other length is not a unit the checks
+    can compute with, so it is left blank (the rate still counts as a
+    ceiling)."""
+    text = (text or "").translate(_AR_DIGITS)
+    m = _PER_N_DAYS.search(text)
+    if m:
+        n = int(m.group(1) or m.group(3))
+        return "day" if n == 1 else "week" if n == 7 else ""
+    if _PER_DAY.search(text):
+        return "day"
+    if _PER_WEEK.search(text):
+        return "week"
+    return ""
 
 
 def _fix_penalty_per(contract: Any) -> None:
@@ -586,13 +604,7 @@ def _fix_penalty_per(contract: Any) -> None:
     for term in contract.get("penalty_terms") or []:
         if not isinstance(term, dict):
             continue
-        text = f"{term.get('text_ar') or ''} {term.get('basis') or ''}"
-        if _PER_DAY.search(text):
-            term["per"] = "day"
-        elif _PER_WEEK.search(text):
-            term["per"] = "week"
-        else:
-            term["per"] = ""
+        term["per"] = clause_period(f"{term.get('text_ar') or ''} {term.get('basis') or ''}")
 
 
 _AR_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")

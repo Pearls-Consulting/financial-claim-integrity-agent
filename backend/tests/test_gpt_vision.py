@@ -52,7 +52,9 @@ def test_penalty_per_follows_the_clause_wording_not_the_reader():
         {"kind": "other", "rate_percent": 0.0, "per": "", "text_ar": "عدم تقديم جدول زمني — 1000 ريال / يوم"},
         {"kind": "delay", "rate_percent": 0.5, "per": "week", "text_ar": "0.5% per week of delay"},
     ]}})
-    assert [t["per"] for t in out["docs"]["contract"]["penalty_terms"]] == ["", "day", "day", "week"]
+    assert [t["per"] for t in out["docs"]["contract"]["penalty_terms"]] == ["", "week", "day", "week"]  # "عن كل 7 أيام" = weekly
+    assert gv.clause_period("غرامة 1000 ريال عن كل 30 يوم تأخير") == ""  # a 30-day period is no unit the checks compute with
+    assert gv.clause_period("عن كل يوم تأخير") == "day" and gv.clause_period("لكل أسبوع") == "week"
 
 
 def test_validate_read_drops_erp_owned_keys():

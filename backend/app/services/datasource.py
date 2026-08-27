@@ -52,6 +52,18 @@ class MockErpSource:
         return self._claims.get(claim_id)
 
 
+class EmptyErpSource:
+    """No ERP feed at all: the claims list holds only what reviewers submit
+    through the guided intake. The client-facing demo instance runs this —
+    seeded example claims must not reappear on every deploy."""
+
+    def list_claims(self) -> list[Claim]:
+        return []
+
+    def get_claim(self, claim_id: str) -> Claim | None:
+        return None
+
+
 _source: ClaimSource | None = None
 
 
@@ -59,7 +71,10 @@ def get_source() -> ClaimSource:
     global _source
     if _source is None:
         engine = get_settings().erp_source
-        if engine != "mock":
-            raise NotImplementedError(f"ERP source '{engine}' not implemented yet (only 'mock')")
-        _source = MockErpSource()
+        if engine == "mock":
+            _source = MockErpSource()
+        elif engine == "none":
+            _source = EmptyErpSource()
+        else:
+            raise NotImplementedError(f"ERP source '{engine}' not implemented yet (mock | none)")
     return _source

@@ -123,6 +123,16 @@ export function ClaimsListPage() {
             </tr>
           </thead>
           <tbody>
+            {claims.length === 0 && !error && (
+              <tr>
+                <td colSpan={7} className="text-muted-foreground p-8 text-center text-sm">
+                  {t(
+                    "No claims yet — start a review with “New claim review” above.",
+                    "لا توجد مطالبات بعد — ابدأ المراجعة من “مراجعة مطالبة جديدة” أعلاه."
+                  )}
+                </td>
+              </tr>
+            )}
             {claims.map((c) => (
               <tr key={c.id} className="border-b border-border last:border-0 hover:bg-muted/60">
                 <td className="p-3 whitespace-nowrap">

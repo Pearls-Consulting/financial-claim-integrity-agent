@@ -106,3 +106,20 @@ def test_every_finding_cites_a_source():
     for gate in result.gates:
         for finding in gate.findings:
             assert finding.source.doc
+
+
+def test_erp_source_none_lists_nothing(monkeypatch):
+    """The client-facing instance runs ERP_SOURCE=none: no seeded claims
+    reappear on deploy; only intake submissions are listed."""
+    from app.services import datasource
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("ERP_SOURCE", "none")
+    get_settings.cache_clear()
+    monkeypatch.setattr(datasource, "_source", None)
+    try:
+        src = datasource.get_source()
+        assert src.list_claims() == [] and src.get_claim("VRM-002402") is None
+    finally:
+        get_settings.cache_clear()
+        monkeypatch.setattr(datasource, "_source", None)

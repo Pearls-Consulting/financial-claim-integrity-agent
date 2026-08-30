@@ -93,15 +93,20 @@ function AppHeader() {
   )
 }
 
-/** The signed-in layout: header, page outlet, and the side PDF viewer. */
+/** The signed-in layout: header, then the page outlet and the document
+ *  reader side by side. The reader is a flex sibling (not an overlay), so
+ *  opening it narrows the page instead of covering it; `items-start` lets
+ *  the reader stay sticky while the page scrolls. */
 function Shell() {
   return (
     <div className="flex min-h-svh flex-col">
       <AppHeader />
-      <main className="mx-auto w-full max-w-6xl flex-1 px-6 pb-16 pt-6">
-        <Outlet />
-      </main>
-      <PdfViewerPanel />
+      <div className="flex flex-1 items-start">
+        <main className="mx-auto w-full min-w-0 max-w-6xl flex-1 px-6 pb-16 pt-6">
+          <Outlet />
+        </main>
+        <PdfViewerPanel />
+      </div>
     </div>
   )
 }

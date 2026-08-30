@@ -179,8 +179,10 @@ function escapeHtml(s: string): string {
   )
 }
 
+// Docked in the Shell's flex row (see App.tsx): takes real width so the page
+// reflows beside it, and sticks to the viewport while the page scrolls.
 const PANEL_CLASS =
-  "fixed inset-y-0 end-0 z-40 flex w-full max-w-[600px] flex-col border-s border-border bg-card shadow-2xl"
+  "sticky top-0 z-30 flex h-svh w-[min(600px,45vw)] shrink-0 flex-col border-s border-border bg-card shadow-xl"
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "tif", "tiff"])
 

@@ -27,6 +27,13 @@ server {
     location = /health {
         proxy_pass http://127.0.0.1:9201;
     }
+    # Vite emits pdf.js's worker as an .mjs asset; nginx's mime.types has no
+    # entry for it and serves application/octet-stream, which browsers refuse
+    # to run as a module script (the evidence viewer then cannot start).
+    location ~ \.mjs$ {
+        types { application/javascript mjs; }
+        default_type application/javascript;
+    }
     location / {
         try_files $uri /index.html;
     }

@@ -9,6 +9,20 @@ export default defineConfig({
   resolve: {
     alias: { "@": path.resolve(__dirname, "./src") },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // pdf.js's worker is pulled in as an .mjs asset (PdfViewerPanel's
+        // `new URL(..., import.meta.url)`); emit it as .js so any static
+        // host serves it with a JavaScript MIME type — browsers refuse to
+        // run a module script served as application/octet-stream.
+        assetFileNames: (info) =>
+          (info.names?.[0] ?? info.name ?? "").endsWith(".mjs")
+            ? "assets/[name]-[hash].js"
+            : "assets/[name]-[hash][extname]",
+      },
+    },
+  },
   server: {
     proxy: {
       "/api": "http://localhost:8000",

@@ -84,6 +84,7 @@ def test_on_time_acceptance_passes_and_missing_dates_skip():
     claim.contract_end_date = "2026-12-31"
     assert _gate(claim, "final_check")["final.delay_from_dates"].severity is Severity.ok
     claim.contract_end_date = ""
+    claim.documents.coc.contract_end_date = ""  # the COC's own printed deadline is the last fallback
     assert "final.delay_from_dates" not in _gate(claim, "final_check")
 
 

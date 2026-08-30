@@ -21,9 +21,18 @@
     "prior_payment_count": 0,
     "status_ar": "تحت الاجراء",
     "source_files": [
-      { "path": "supporting_docs/example_documents/Sales-Invoice-00196.pdf", "doc_type": "invoice" },
-      { "path": "supporting_docs/example_documents/ESNAD PO4500001119 - Materials and supplier data cleansing.pdf", "doc_type": "contract_boq" },
-      { "path": "supporting_docs/example_documents/Delivery-Note-ESNAD.docx", "doc_type": "delivery_note" }
+      {
+        "path": "supporting_docs/example_documents/Sales-Invoice-00196.pdf",
+        "doc_type": "invoice"
+      },
+      {
+        "path": "supporting_docs/example_documents/ESNAD PO4500001119 - Materials and supplier data cleansing.pdf",
+        "doc_type": "contract_boq"
+      },
+      {
+        "path": "supporting_docs/example_documents/Delivery-Note-ESNAD.docx",
+        "doc_type": "delivery_note"
+      }
     ],
     "documents": {
       "invoice": {
@@ -36,18 +45,48 @@
         "vat_exempt": false,
         "qr_payload": "ASvZgdix2Lkg2LTYsdmD2Kkg2KjZitix2YTYsiDZg9mI2YbYs9mE2KrZhtmCAg8zMTAwNjc2MzQ3MDAwMDMDFDIwMjYtMDMtMDFUMTc6Mjg6MjJaBAkxNzgyNTAuMDAFBTIzMjUwBlhZamhpWlRRek56a3hNamMyTURKa1pHVm1aV1ZsT1dJMU9EZ3pNREV5TnpNME1qWm1NbVl5T1Rsa016UTFPR1F6WldZeE1HSTJNRE00Wmpsa1pHRmhZdz09ByxNbk9neEpMSTFwa1AzWmVlZjFtYndFNkhlcXlzWGZrQ2NGSDRtN2ppQUx3PQgkNWU1ZGNiN2ItY2JhOC00MTQ2LWEyNmYtMzU3YjQxM2M2M2E2",
         "lines": [
-          { "item_code": "10", "description_ar": "Vendor master data cleansing approved report", "unit_price": 90000.0, "quantity": 1, "amount": 90000.0 },
-          { "item_code": "20", "description_ar": "Material data cleansing approved report", "unit_price": 45000.0, "quantity": 1, "amount": 45000.0 },
-          { "item_code": "30", "description_ar": "Closing Master Data categorization activities", "unit_price": 20000.0, "quantity": 1, "amount": 20000.0 }
+          {
+            "item_code": "10",
+            "description_ar": "Vendor master data cleansing approved report",
+            "unit_price": 90000.0,
+            "quantity": 1,
+            "amount": 90000.0
+          },
+          {
+            "item_code": "20",
+            "description_ar": "Material data cleansing approved report",
+            "unit_price": 45000.0,
+            "quantity": 1,
+            "amount": 45000.0
+          },
+          {
+            "item_code": "30",
+            "description_ar": "Closing Master Data categorization activities",
+            "unit_price": 20000.0,
+            "quantity": 1,
+            "amount": 20000.0
+          }
         ]
       },
       "receipt": {
         "receipt_no": "PR-000000841",
         "receipt_date": "2026-03-03",
         "lines": [
-          { "item_code": "10", "description_ar": "Vendor master data cleansing approved report", "quantity": 1 },
-          { "item_code": "20", "description_ar": "Material data cleansing approved report", "quantity": 1 },
-          { "item_code": "30", "description_ar": "Closing Master Data categorization activities", "quantity": 1 }
+          {
+            "item_code": "10",
+            "description_ar": "Vendor master data cleansing approved report",
+            "quantity": 1
+          },
+          {
+            "item_code": "20",
+            "description_ar": "Material data cleansing approved report",
+            "quantity": 1
+          },
+          {
+            "item_code": "30",
+            "description_ar": "Closing Master Data categorization activities",
+            "quantity": 1
+          }
         ]
       },
       "coc": {
@@ -57,12 +96,44 @@
         "has_delay": false,
         "has_stoppage": false,
         "has_observations": false,
-        "delay_days": 0
+        "delay_days": 0,
+        "claim_net": 155000.0,
+        "vat_amount": 23250.0,
+        "invoice_ref": "00196",
+        "payment_no": 1,
+        "claim_type": "final",
+        "contract_no": "LC-RAM-P400-RFP001-25",
+        "contract_start_date": "2025-11-01",
+        "contract_end_date": "2026-03-31",
+        "contract_value_with_vat": 178250.0,
+        "award_letter_no": "",
+        "site_handover_date": "2025-11-01"
       },
       "boq": [
-        { "item_code": "10", "description_ar": "Vendor master data cleansing approved report", "description_en": "Vendor master data cleansing approved report", "unit": "EA", "unit_price": 90000.0, "quantity": 1 },
-        { "item_code": "20", "description_ar": "Material data cleansing approved report", "description_en": "Material data cleansing approved report", "unit": "EA", "unit_price": 45000.0, "quantity": 1 },
-        { "item_code": "30", "description_ar": "Closing Master Data categorization activities", "description_en": "Closing Master Data categorization activities", "unit": "EA", "unit_price": 20000.0, "quantity": 1 }
+        {
+          "item_code": "10",
+          "description_ar": "Vendor master data cleansing approved report",
+          "description_en": "Vendor master data cleansing approved report",
+          "unit": "EA",
+          "unit_price": 90000.0,
+          "quantity": 1
+        },
+        {
+          "item_code": "20",
+          "description_ar": "Material data cleansing approved report",
+          "description_en": "Material data cleansing approved report",
+          "unit": "EA",
+          "unit_price": 45000.0,
+          "quantity": 1
+        },
+        {
+          "item_code": "30",
+          "description_ar": "Closing Master Data categorization activities",
+          "description_en": "Closing Master Data categorization activities",
+          "unit": "EA",
+          "unit_price": 20000.0,
+          "quantity": 1
+        }
       ],
       "penalties": [],
       "attachments": [
@@ -97,9 +168,18 @@
     "prior_payment_count": 3,
     "status_ar": "تحت الاجراء",
     "source_files": [
-      { "path": "supporting_docs/test_scenarios/modern-construction/TEST-fake_face-INV-2026-0117.pdf", "doc_type": "invoice" },
-      { "path": "supporting_docs/test_scenarios/modern-construction/COC-000000242.pdf", "doc_type": "coc" },
-      { "path": "supporting_docs/test_scenarios/modern-construction/BoQ-RFQ25-118.pdf", "doc_type": "contract_boq" }
+      {
+        "path": "supporting_docs/test_scenarios/modern-construction/TEST-fake_face-INV-2026-0117.pdf",
+        "doc_type": "invoice"
+      },
+      {
+        "path": "supporting_docs/test_scenarios/modern-construction/COC-000000242.pdf",
+        "doc_type": "coc"
+      },
+      {
+        "path": "supporting_docs/test_scenarios/modern-construction/BoQ-RFQ25-118.pdf",
+        "doc_type": "contract_boq"
+      }
     ],
     "documents": {
       "invoice": {
@@ -112,16 +192,36 @@
         "vat_exempt": false,
         "qr_payload": "ASbZhdik2LPYs9ipINin2YTZhtis2KfYrSDZhNmE2KrYrNin2LHYqQIFMTIzNDUDFDIwMjYtMDUtMDFUMDk6MDA6MDBaBAk5OTk5OTkuMDAFBDAuMDA=",
         "lines": [
-          { "item_code": "CIV-010", "description_ar": "أعمال ترميم واجهات", "unit_price": 95000.0, "quantity": 2, "amount": 190000.0 },
-          { "item_code": "CIV-014", "description_ar": "أعمال تكييف وتهوية", "unit_price": 63333.33, "quantity": 3, "amount": 190000.0 }
+          {
+            "item_code": "CIV-010",
+            "description_ar": "أعمال ترميم واجهات",
+            "unit_price": 95000.0,
+            "quantity": 2,
+            "amount": 190000.0
+          },
+          {
+            "item_code": "CIV-014",
+            "description_ar": "أعمال تكييف وتهوية",
+            "unit_price": 63333.33,
+            "quantity": 3,
+            "amount": 190000.0
+          }
         ]
       },
       "receipt": {
         "receipt_no": "PR-000001127",
         "receipt_date": "2026-06-28",
         "lines": [
-          { "item_code": "CIV-010", "description_ar": "أعمال ترميم واجهات", "quantity": 2 },
-          { "item_code": "CIV-014", "description_ar": "أعمال تكييف وتهوية", "quantity": 1 }
+          {
+            "item_code": "CIV-010",
+            "description_ar": "أعمال ترميم واجهات",
+            "quantity": 2
+          },
+          {
+            "item_code": "CIV-014",
+            "description_ar": "أعمال تكييف وتهوية",
+            "quantity": 1
+          }
         ]
       },
       "coc": {
@@ -131,14 +231,43 @@
         "has_delay": false,
         "has_stoppage": false,
         "has_observations": false,
-        "delay_days": 0
+        "delay_days": 0,
+        "claim_net": 380000.0,
+        "vat_amount": 57000.0,
+        "invoice_ref": "INV-2026-0117",
+        "payment_no": 5,
+        "claim_type": "periodic",
+        "contract_no": "RFQ25/118",
+        "contract_start_date": "2025-09-01",
+        "contract_end_date": "2026-12-31",
+        "contract_value_with_vat": 4830000.0,
+        "award_letter_no": "",
+        "site_handover_date": "2025-09-01"
       },
       "boq": [
-        { "item_code": "CIV-010", "description_ar": "أعمال ترميم واجهات", "description_en": "Facade restoration works", "unit": "building", "unit_price": 95000.0, "quantity": 8 },
-        { "item_code": "CIV-014", "description_ar": "أعمال تكييف وتهوية", "description_en": "HVAC works", "unit": "building", "unit_price": 55000.0, "quantity": 8 }
+        {
+          "item_code": "CIV-010",
+          "description_ar": "أعمال ترميم واجهات",
+          "description_en": "Facade restoration works",
+          "unit": "building",
+          "unit_price": 95000.0,
+          "quantity": 8
+        },
+        {
+          "item_code": "CIV-014",
+          "description_ar": "أعمال تكييف وتهوية",
+          "description_en": "HVAC works",
+          "unit": "building",
+          "unit_price": 55000.0,
+          "quantity": 8
+        }
       ],
       "penalties": [
-        { "reason_ar": "غرامة تأخير في تسليم المرحلة الثالثة", "amount": 25000.0, "date": "2026-06-20" }
+        {
+          "reason_ar": "غرامة تأخير في تسليم المرحلة الثالثة",
+          "amount": 25000.0,
+          "date": "2026-06-20"
+        }
       ],
       "attachments": [
         "contract",

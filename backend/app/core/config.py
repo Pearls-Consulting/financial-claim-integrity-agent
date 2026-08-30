@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     # page and that value WINS. Measured: the schema-wide read transposes a
     # 15-digit VAT number ~30% of the time; the focused read 0/24.
     gpt_vision_verify: bool = True
+    # Text-layer witness (extraction/text_layer.py): a born-digital PDF's
+    # text layer carries exact digits. It is shown to the verify read as a
+    # hint, and every identifier/amount the model read is checked against it
+    # in code — a value absent from the text with a unique one-slip variant
+    # present (transposition, zero-count) takes the text's digits. Scans
+    # have no text layer and are unaffected. Silent: never a finding.
+    gpt_vision_text_layer: bool = True
     # Disk cache of model reads (gpt_vision / gpt_attachments / gpt_reconcile).
     # Off: every run re-reads the documents — what the demo should show.
     extraction_cache: bool = False

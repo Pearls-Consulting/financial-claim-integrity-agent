@@ -22,3 +22,6 @@ supporting_docs/contracts/
 supporting_docs/test_scenarios/hhc-fitout/Contract-HHC00050-Fitout.pdf
 backend/.test_uploads/
 backend/.experiments/
+
+# Office lock files (a document open in Word)
+~$*

@@ -75,7 +75,18 @@ export interface InvoiceDoc {
 export interface CocDoc {
   coc_no: string
   coc_date: string
-  claim_amount: number
+  claim_amount: number // إجمالي المطالبة (incl. VAT)
+  claim_net?: number // قيمة المطالبة الحالية (excl. VAT); 0 = not printed
+  vat_amount?: number
+  invoice_ref?: string // رقم المطالبة المالية
+  payment_no?: number // ترتيب الدفعة as a number; 0 = not printed
+  claim_type?: string // "periodic" | "final" | ""
+  contract_no?: string
+  contract_start_date?: string
+  contract_end_date?: string
+  contract_value_with_vat?: number
+  award_letter_no?: string
+  site_handover_date?: string
   has_delay: boolean | null
   has_stoppage: boolean | null
   has_observations: boolean | null

@@ -19,6 +19,41 @@ rules:
     severity: fail
     source: { doc: SP-01-04-05-02, ref: steps 3-4 }
 
+  - id: three_way.coc_invoice_ref
+    title_en: COC issued for this claim's invoice
+    title_ar: محضر الإنجاز صادر لفاتورة هذه المطالبة
+    check: coc_invoice_ref_matches
+    severity: fail
+    source: { doc: SP-01-04-05-02, ref: "step 3 — محضر الإنجاز (رقم المطالبة المالية)" }
+
+  - id: three_way.coc_amounts_match_invoice
+    title_en: COC net and VAT match the invoice
+    title_ar: مبلغ المحضر قبل الضريبة وضريبته يطابقان الفاتورة
+    check: coc_amounts_match_invoice
+    severity: fail
+    source: { doc: SP-01-04-05-02, ref: steps 3-4 }
+
+  - id: three_way.coc_payment_matches_claim
+    title_en: COC payment ordinal and claim type match the claim
+    title_ar: ترتيب الدفعة ونوع المستخلص في المحضر يطابقان المطالبة
+    check: coc_payment_matches_claim
+    severity: fail
+    source: { doc: SP-01-04-05-02, ref: "claim metadata — رقم الدفعة / نوع المستخلص" }
+
+  - id: three_way.coc_contract_value
+    title_en: COC contract value matches the contract
+    title_ar: قيمة العقد في المحضر تطابق العقد
+    check: coc_contract_value_matches
+    severity: fail
+    source: { doc: contract, ref: "contract value incl. VAT (قيمة التعميد)" }
+
+  - id: three_way.coc_award_letter
+    title_en: COC award letter number matches the filed award letter
+    title_ar: رقم خطاب الترسية في المحضر يطابق الخطاب المرفق
+    check: coc_award_letter_matches
+    severity: warn
+    source: { doc: SP-01-04-05-02, ref: "required attachments — خطاب الترسية" }
+
   - id: three_way.billed_vs_received
     title_en: Quantities billed do not exceed quantities received
     title_ar: الكميات المفوترة لا تتجاوز الكميات المستلمة

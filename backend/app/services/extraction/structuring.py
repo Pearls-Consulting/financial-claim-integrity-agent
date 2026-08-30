@@ -43,7 +43,10 @@ OUTPUT — return ONLY this JSON (no markdown fences, no commentary):
     "lines": [{"item_code": "", "description_ar": "", "unit_price": 0.0, "quantity": 0.0, "amount": 0.0}]
   } | null,
   "coc": {
-    "coc_no": "", "coc_date": "", "claim_amount": 0.0,
+    "coc_no": "", "coc_date": "", "claim_amount": 0.0, "claim_net": 0.0, "vat_amount": 0.0,
+    "invoice_ref": "", "payment_no": 0, "claim_type": "periodic|final|",
+    "contract_no": "", "contract_start_date": "", "contract_end_date": "", "contract_value_with_vat": 0.0,
+    "award_letter_no": "", "site_handover_date": "",
     "has_delay": true|false|null, "has_stoppage": true|false|null,
     "has_observations": true|false|null, "delay_days": 0
   } | null,

@@ -529,6 +529,166 @@ def coc_amount_matches_claim(claim: Claim, params: dict) -> CheckOutcome:
     )
 
 
+def _ident_key(value: str) -> str:
+    """Identifier comparison form: case, spacing and punctuation aside
+    ("INV/2026/00070" = "INV-2026-00070" = "inv 2026 00070")."""
+    return re.sub(r"[^0-9A-Za-z\u0600-\u06FF]+", "", (value or "").translate(_AR_DIGITS_RULES)).upper()
+
+
+_AR_DIGITS_RULES = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+
+_NO_COC = CheckOutcome(ok=None, detail_en="No COC generated yet.", detail_ar="لم يصدر محضر الإنجاز بعد.")
+
+
+@check("coc_invoice_ref_matches")
+def coc_invoice_ref_matches(claim: Claim, params: dict) -> CheckOutcome:
+    """The COC names the invoice / financial claim it certifies (رقم المطالبة
+    المالية) — it must be THIS claim's invoice, not an earlier payment's."""
+    coc, inv = claim.documents.coc, claim.documents.invoice
+    if coc is None:
+        return _NO_COC
+    if not coc.invoice_ref:
+        return CheckOutcome(ok=None, detail_en="The COC does not print an invoice / claim reference.", detail_ar="لا يطبع المحضر رقم المطالبة المالية.")
+    expected = inv.invoice_no if inv is not None and inv.invoice_no else claim.invoice_no
+    where_en, where_ar = ("invoice", "الفاتورة") if inv is not None and inv.invoice_no else ("claim form", "نموذج المطالبة")
+    ok = _ident_key(coc.invoice_ref) == _ident_key(expected) or _ident_key(coc.invoice_ref) in {_ident_key(v) for v in _bidi_variants(expected)}
+    return CheckOutcome(
+        ok=ok,
+        detail_en=f"COC certifies claim '{coc.invoice_ref}'; the {where_en} says '{expected}'." + ("" if ok else " The COC was issued for a different invoice."),
+        detail_ar=f"المحضر صادر للمطالبة '{coc.invoice_ref}'؛ {where_ar}: '{expected}'." + ("" if ok else " المحضر صادر لفاتورة أخرى."),
+        evidence={"coc_ref": coc.invoice_ref, "invoice": expected},
+    )
+
+
+@check("coc_amounts_match_invoice")
+def coc_amounts_match_invoice(claim: Claim, params: dict) -> CheckOutcome:
+    """The COC restates the claim as net + VAT (قيمة المطالبة الحالية /
+    مبلغ الضريبة); both must equal the invoice's, not only the total."""
+    coc, inv = claim.documents.coc, claim.documents.invoice
+    if coc is None:
+        return _NO_COC
+    if inv is None or (coc.claim_net <= 0 and coc.vat_amount <= 0):
+        return CheckOutcome(ok=None, detail_en="No invoice, or the COC prints only the total.", detail_ar="لا توجد فاتورة، أو المحضر يطبع الإجمالي فقط.")
+    inv_net = round(inv.total_with_vat - inv.vat_amount, 2)
+    off = []
+    if coc.claim_net > 0 and abs(coc.claim_net - inv_net) > 0.01:
+        off.append(("net (excl. VAT)", "المبلغ قبل الضريبة"))
+    if coc.vat_amount > 0 and abs(coc.vat_amount - inv.vat_amount) > 0.01:
+        off.append(("VAT", "الضريبة"))
+    ok = not off
+    return CheckOutcome(
+        ok=ok,
+        detail_en=(
+            f"COC net {coc.claim_net:,.2f} / VAT {coc.vat_amount:,.2f} vs invoice net {inv_net:,.2f} / VAT {inv.vat_amount:,.2f}."
+            + ("" if ok else " Differs on: " + ", ".join(e for e, _ in off) + ".")
+        ),
+        detail_ar=(
+            f"المحضر: {coc.claim_net:,.2f} قبل الضريبة / ضريبة {coc.vat_amount:,.2f} مقابل الفاتورة: {inv_net:,.2f} / {inv.vat_amount:,.2f}."
+            + ("" if ok else " اختلاف في: " + "، ".join(a for _, a in off) + ".")
+        ),
+        evidence={"coc_net": coc.claim_net, "invoice_net": inv_net, "coc_vat": coc.vat_amount, "invoice_vat": inv.vat_amount},
+    )
+
+
+@check("coc_payment_matches_claim")
+def coc_payment_matches_claim(claim: Claim, params: dict) -> CheckOutcome:
+    """The payment ordinal (ترتيب الدفعة) and claim type (نوع المستخلص) the
+    COC prints must be the ones on the claim — a COC certifying "the fifth
+    payment, periodic" attached to a final claim no. 6 is a re-used COC."""
+    coc = claim.documents.coc
+    if coc is None:
+        return _NO_COC
+    if coc.payment_no < 1 and not coc.claim_type:
+        return CheckOutcome(ok=None, detail_en="The COC prints neither a payment ordinal nor a claim type.", detail_ar="لا يطبع المحضر ترتيب الدفعة ولا نوع المستخلص.")
+    off = []
+    if coc.payment_no >= 1 and claim.payment_no >= 1 and coc.payment_no != claim.payment_no:
+        off.append((f"payment no. {coc.payment_no} vs {claim.payment_no}", f"رقم الدفعة {coc.payment_no} مقابل {claim.payment_no}"))
+    if coc.claim_type and coc.claim_type != claim.claim_type.value:
+        off.append((f"type '{coc.claim_type}' vs '{claim.claim_type.value}'", f"النوع '{coc.claim_type}' مقابل '{claim.claim_type.value}'"))
+    ok = not off
+    return CheckOutcome(
+        ok=ok,
+        detail_en=(
+            f"COC: payment no. {coc.payment_no or '—'}, type {coc.claim_type or '—'}; claim: payment no. {claim.payment_no or '—'}, type {claim.claim_type.value}."
+            + ("" if ok else " Mismatch — " + "; ".join(e for e, _ in off) + ".")
+        ),
+        detail_ar=(
+            f"المحضر: الدفعة {coc.payment_no or '—'}، النوع {coc.claim_type or '—'}؛ المطالبة: الدفعة {claim.payment_no or '—'}، النوع {claim.claim_type.value}."
+            + ("" if ok else " عدم تطابق — " + "؛ ".join(a for _, a in off) + ".")
+        ),
+        evidence={"coc_payment": coc.payment_no, "claim_payment_no": claim.payment_no, "coc_claim_type": coc.claim_type, "claim_type": claim.claim_type.value},
+    )
+
+
+@check("coc_contract_value_matches")
+def coc_contract_value_matches(claim: Claim, params: dict) -> CheckOutcome:
+    """قيمة التعميد / العقد (شامل الضريبة) on the COC vs the contract
+    (its printed incl-VAT value, else the claim header's base value + 15%)."""
+    coc, contract = claim.documents.coc, claim.documents.contract
+    if coc is None:
+        return _NO_COC
+    if coc.contract_value_with_vat <= 0:
+        return CheckOutcome(ok=None, detail_en="The COC does not print the contract value.", detail_ar="لا يطبع المحضر قيمة العقد.")
+    if contract is not None and contract.value_with_vat > 0:
+        expected, src_en, src_ar = contract.value_with_vat, "contract document", "مستند العقد"
+    elif claim.contract_value > 0:
+        expected, src_en, src_ar = round(claim.contract_value * 1.15, 2), "claim header (base + 15% VAT)", "بيانات المطالبة (الأساس + 15٪)"
+    else:
+        return CheckOutcome(ok=None, detail_en="No contract value to compare against.", detail_ar="لا توجد قيمة عقد للمقارنة.")
+    ok = abs(coc.contract_value_with_vat - expected) <= 1.0
+    return CheckOutcome(
+        ok=ok,
+        detail_en=f"COC contract value {coc.contract_value_with_vat:,.2f} vs {expected:,.2f} per the {src_en}.",
+        detail_ar=f"قيمة العقد في المحضر {coc.contract_value_with_vat:,.2f} مقابل {expected:,.2f} وفق {src_ar}.",
+        evidence={"coc_value_with_vat": coc.contract_value_with_vat, "contract_value_with_vat": expected},
+    )
+
+
+@check("coc_contract_end_matches")
+def coc_contract_end_matches(claim: Claim, params: dict) -> CheckOutcome:
+    """تاريخ نهاية التعميد / العقد on the COC vs the contract end date the
+    claim runs its delay inference on — the ERP's own view of the deadline
+    must not differ from the contract's."""
+    coc, contract = claim.documents.coc, claim.documents.contract
+    if coc is None:
+        return _NO_COC
+    coc_end = _parse_date(coc.contract_end_date)
+    end = _parse_date(claim.contract_end_date) or (_parse_date(contract.end_date) if contract else None)
+    if coc_end is None or end is None:
+        return CheckOutcome(ok=None, detail_en="Contract end date missing on the COC or on the contract.", detail_ar="تاريخ نهاية العقد غير متوفر في المحضر أو في العقد.")
+    # A contract that states a DURATION has its end date derived (anchor +
+    # months); a day or two of slack there is not the COC citing another
+    # deadline. The rulepack sets the allowance.
+    tolerance = int(params.get("tolerance_days", 0))
+    apart = abs((coc_end - end).days)
+    ok = apart <= tolerance
+    return CheckOutcome(
+        ok=ok,
+        detail_en=f"COC says the contract ends {coc_end.isoformat()}; the contract says {end.isoformat()}." + ("" if ok else f" {apart} day(s) apart — the COC's deadline is not the contract's."),
+        detail_ar=f"نهاية العقد في المحضر {coc_end.isoformat()}؛ في العقد {end.isoformat()}." + ("" if ok else f" فارق {_days_ar(apart)} — موعد المحضر ليس موعد العقد."),
+        evidence={"coc_end_date": coc_end.isoformat(), "contract_end": end.isoformat()},
+    )
+
+
+@check("coc_award_letter_matches")
+def coc_award_letter_matches(claim: Claim, params: dict) -> CheckOutcome:
+    """رقم خطاب الترسية on the COC vs the award letter filed with the claim."""
+    coc = claim.documents.coc
+    if coc is None:
+        return _NO_COC
+    letter = next((a for a in claim.documents.detected_attachments if a.doc_key == "award letter"), None)
+    ref = (letter.fields.get("reference_no") if letter else "") or ""
+    if not coc.award_letter_no or not ref:
+        return CheckOutcome(ok=None, detail_en="No award letter number to compare (COC or filed letter).", detail_ar="لا يوجد رقم خطاب ترسية للمقارنة (في المحضر أو في الخطاب المرفق).")
+    ok = _ident_key(coc.award_letter_no) == _ident_key(ref)
+    return CheckOutcome(
+        ok=ok,
+        detail_en=f"COC cites award letter {coc.award_letter_no}; the filed award letter is {ref}.",
+        detail_ar=f"يشير المحضر إلى خطاب الترسية {coc.award_letter_no}؛ الخطاب المرفق رقمه {ref}.",
+        evidence={"coc_award_letter": coc.award_letter_no, "award_letter": ref},
+    )
+
+
 @check("coc_delay_vs_penalties")
 def coc_delay_vs_penalties(claim: Claim, params: dict) -> CheckOutcome:
     coc = claim.documents.coc
@@ -588,11 +748,17 @@ def _parse_date(value: str) -> date | None:
 def _completion_vs_end(claim: Claim) -> tuple[date | None, date | None, str]:
     """(contract end, acceptance date, acceptance label) — the date pair the
     delay inference runs on. Contract end comes from the claim header, else the
-    contract document; the acceptance date is the COC date for works and the
+    contract document, else the deadline the COC itself prints (the ERP's
+    view — coc_contract_end_matches flags it when it differs from the
+    contract's); the acceptance date is the COC date for works and the
     receipt date for goods. Either side may be None (unknown)."""
     contract = claim.documents.contract
-    end = _parse_date(claim.contract_end_date) or (_parse_date(contract.end_date) if contract else None)
     coc, rec = claim.documents.coc, claim.documents.receipt
+    end = (
+        _parse_date(claim.contract_end_date)
+        or (_parse_date(contract.end_date) if contract else None)
+        or (_parse_date(coc.contract_end_date) if coc else None)
+    )
     if claim.contract_kind is ContractKind.goods:
         return end, (_parse_date(rec.receipt_date) if rec else None), "delivery date"
     return end, (_parse_date(coc.coc_date) if coc else None), "COC date"

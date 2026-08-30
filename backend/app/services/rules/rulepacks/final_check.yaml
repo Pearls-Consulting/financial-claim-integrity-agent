@@ -19,6 +19,14 @@ rules:
     severity: fail
     source: { doc: contract, ref: "duration / delivery date; GTPL delay penalties" }
 
+  - id: final.coc_contract_end
+    title_en: COC contract end date matches the contract
+    title_ar: تاريخ نهاية العقد في المحضر يطابق العقد
+    check: coc_contract_end_matches
+    severity: fail
+    params: { tolerance_days: 3 }  # a duration-derived end date may sit a day or two off the printed one
+    source: { doc: contract, ref: "duration / delivery date (تاريخ نهاية التعميد)" }
+
   - id: final.penalties_vs_contract
     title_en: Penalty record vs the contract's penalty clauses
     title_ar: مطابقة سجل الغرامات مع بنود الغرامات في العقد

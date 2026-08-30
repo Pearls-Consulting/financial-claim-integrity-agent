@@ -36,6 +36,7 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.domain.models import ClaimDocuments
+from app.services.extraction import text_layer
 from app.services.extraction.pdfium_lock import PDFIUM_LOCK
 from app.services.extraction.retry import with_retries
 
@@ -80,7 +81,10 @@ OUTPUT — return ONLY this JSON (no markdown fences, no commentary):
     "lines": [{"item_code": "", "description_ar": "", "unit_price": 0.0, "quantity": 0.0, "amount": 0.0, "page": 0}]
   } | null,
   "coc": {
-    "coc_no": "", "coc_date": "", "claim_amount": 0.0,
+    "coc_no": "", "coc_date": "", "claim_amount": 0.0, "claim_net": 0.0, "vat_amount": 0.0,
+    "invoice_ref": "", "payment_no": 0, "claim_type": "periodic|final|",
+    "contract_no": "", "contract_start_date": "", "contract_end_date": "", "contract_value_with_vat": 0.0,
+    "award_letter_no": "", "site_handover_date": "",
     "has_delay": true|false|null, "has_stoppage": true|false|null,
     "has_observations": true|false|null, "delay_days": 0, "page": 0
   } | null,
@@ -149,7 +153,17 @@ RULES
   INCLUDING VAT as certified (إجمالي المطالبة / شامل الضريبة) — NOT the
   pre-VAT current-claim value and NOT the VAT line — and the three yes/no
   declarations (delay? stoppage & resumption? observations?) as printed —
-  null when not ticked/printed; delay_days as printed, else 0. A COC that
+  null when not ticked/printed; delay_days as printed, else 0. The print
+  also restates the claim and the contract — copy each as printed, 0 / ""
+  when absent: claim_net = قيمة المطالبة الحالية (pre-VAT), vat_amount =
+  مبلغ الضريبة, invoice_ref = رقم المطالبة المالية (the invoice/claim number
+  the COC was issued for), payment_no = ترتيب الدفعة / المستخلص الحالي as a
+  NUMBER (الدفعة السابعة = 7, المستخلص الثاني = 2), claim_type from
+  نوع المستخلص (دوري → "periodic", نهائي → "final"), contract_no =
+  رقم التعميد / العقد, contract_start_date / contract_end_date =
+  تاريخ التعميد / تاريخ نهاية التعميد (العقد), contract_value_with_vat =
+  قيمة التعميد / العقد شامل الضريبة, award_letter_no = رقم خطاب الترسية,
+  site_handover_date = تاريخ محضر تسليم الموقع / بداية الخدمة. A COC that
   quotes the contract value is still not a contract: leave "contract" null.
 - Monetary values: plain numbers (no thousands separators, no currency).
 - If no invoice / COC / contract / receipt is present in these pages, set
@@ -182,7 +196,8 @@ Return ONLY this JSON (no fences, no commentary):
 {
   "invoice": {"invoice_no": "", "invoice_date": "YYYY-MM-DD if derivable, else as printed",
               "seller_vat_number": "", "total_with_vat": 0.0, "vat_amount": 0.0} | null,
-  "coc": {"coc_no": "", "coc_date": "", "claim_amount": 0.0, "delay_days": 0} | null,
+  "coc": {"coc_no": "", "coc_date": "", "claim_amount": 0.0, "claim_net": 0.0, "vat_amount": 0.0,
+          "delay_days": 0, "invoice_ref": "", "contract_no": "", "contract_end_date": ""} | null,
   "receipt": {"receipt_no": "", "receipt_date": ""} | null,
   "contract": {"contract_no": "", "start_date": "", "end_date": "", "value_base": 0.0, "value_with_vat": 0.0} | null
 }
@@ -193,7 +208,10 @@ contract number/value is not a contract — "contract" stays null there.
 seller_vat_number is the VAT registration number (الرقم الضريبي, 15 digits)
 — not the CR number (السجل التجاري). coc.claim_amount is the claim TOTAL
 INCLUDING VAT (إجمالي المطالبة / شامل الضريبة), never the pre-VAT amount or
-the VAT line. contract.value_base is the contract value EXCLUDING VAT
+the VAT line; coc.claim_net is the pre-VAT قيمة المطالبة الحالية and
+coc.vat_amount the مبلغ الضريبة line; coc.invoice_ref is رقم المطالبة
+المالية; coc.contract_no / contract_end_date are رقم التعميد / العقد and
+تاريخ نهاية التعميد / العقد. contract.value_base is the contract value EXCLUDING VAT
 (قبل الضريبة); contract.value_with_vat the figure labelled شامل الضريبة —
 never put the incl-VAT figure in value_base.
 """
@@ -202,20 +220,26 @@ never put the incl-VAT figure in value_base.
 # lines, penalty clauses and BoQ rows stay with the full read.
 _KEY_FIELDS = {
     "invoice": ("invoice_no", "invoice_date", "seller_vat_number", "total_with_vat", "vat_amount"),
-    "coc": ("coc_no", "coc_date", "claim_amount", "delay_days"),
+    "coc": ("coc_no", "coc_date", "claim_amount", "claim_net", "vat_amount", "delay_days", "invoice_ref", "contract_no", "contract_end_date"),
     "receipt": ("receipt_no", "receipt_date"),
     "contract": ("contract_no", "start_date", "end_date", "value_base", "value_with_vat"),
 }
 
 
-def read_key_fields(unit: Unit, *, client: Any | None = None) -> dict[str, Any]:
+def read_key_fields(unit: Unit, *, client: Any | None = None, text: str = "") -> dict[str, Any]:
     """The focused header read → {section: {field: value}} (validated types,
-    empties dropped)."""
+    empties dropped). `text` is the unit's PDF text layer, shown as a hint
+    when it is usable (text_layer.usable): exact digits for a value the
+    model sees in the image."""
     client = client or make_client()
+    content: list[dict[str, Any]] = [*unit_blocks(unit)]
+    if text and text_layer.usable(text):
+        content.append({"type": "input_text", "text": text_layer.hint_block(text)})
+    content.append({"type": "input_text", "text": f"File: {unit.path.name}\nReturn ONLY the JSON object."})
     raw = call_json(
         client,
         system=KEY_FIELDS_SYSTEM,
-        content=[*unit_blocks(unit), {"type": "input_text", "text": f"File: {unit.path.name}\nReturn ONLY the JSON object."}],
+        content=content,
         model=vision_model(),
         effort=get_settings().gpt_vision_effort,
         max_tokens=1500,
@@ -230,7 +254,7 @@ def read_key_fields(unit: Unit, *, client: Any | None = None) -> dict[str, Any]:
             v = block.get(f)
             if v in (None, "", 0, 0.0, []):
                 continue
-            if f in ("total_with_vat", "vat_amount", "claim_amount", "value_base", "value_with_vat"):
+            if f in ("total_with_vat", "vat_amount", "claim_amount", "claim_net", "value_base", "value_with_vat"):
                 try:
                     v = float(v)
                 except (TypeError, ValueError):
@@ -821,7 +845,7 @@ _DIGIT_RUN = re.compile(r"\d+")
 # Free-text fields: wording (and the digits inside a description like
 # "120*120", or a clause ref read RTL as ٣.٣.١ / ١.٣.٣) legitimately varies
 # between two correct reads. Never part of the agreement signature.
-_TEXT_KEYS = {"description_ar", "description_en", "text_ar", "basis", "seller_name_ar", "ref", "kind", "per", "unit", "source_file"}
+_TEXT_KEYS = {"description_ar", "description_en", "text_ar", "basis", "seller_name_ar", "ref", "kind", "per", "unit", "source_file", "claim_type"}
 
 
 def _sig(obj: Any) -> Any:
@@ -916,6 +940,10 @@ def _read_units(units: list[Unit], client: Any) -> list[dict[str, Any] | None]:
     a disagreement between two passes gets one tie-break read. A unit whose
     reads all failed yields None."""
     s = get_settings()
+    # The text layer of every unit, once (PDFium, cheap; "" for images and
+    # scans): a hint to the verify read, and the witness the settled values
+    # are checked against.
+    texts = [text_layer.unit_text(u) if s.gpt_vision_text_layer else "" for u in units]
     jobs: list[tuple[int, Unit, bool]] = [(ui, u, False) for ui, u in enumerate(units) for _ in range(_passes_for(u))]
     # The focused header re-read: for the first chunk of every file (the
     # header page is there), concurrent with the full reads.
@@ -926,7 +954,7 @@ def _read_units(units: list[Unit], client: Any) -> list[dict[str, Any] | None]:
     def _run(job: tuple[int, Unit, bool]) -> tuple[int, bool, dict[str, Any] | None]:
         ui, unit, verify = job
         try:
-            return ui, verify, (read_key_fields(unit, client=client) if verify else read_unit(unit, client=client))
+            return ui, verify, (read_key_fields(unit, client=client, text=texts[ui]) if verify else read_unit(unit, client=client))
         except Exception:
             logger.exception("GPT %s failed on %s (chunk %d)", "verify" if verify else "reader", unit.path.name, unit.chunk_index + 1)
             return ui, verify, None
@@ -960,6 +988,10 @@ def _read_units(units: list[Unit], client: Any) -> list[dict[str, Any] | None]:
         settled = vote(reads)
         if key_fields.get(ui):
             settled = apply_key_fields(settled, key_fields[ui])
+        if texts[ui]:
+            fixed = text_layer.reconcile(settled["docs"], texts[ui])
+            if fixed:
+                logger.info("text layer settled %s chunk %d: %s", units[ui].path.name, units[ui].chunk_index + 1, "; ".join(fixed))
         return settled
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -974,7 +1006,7 @@ def _file_cache_key(path: Path, data: bytes, *, max_pages: int | None) -> Path:
     stamp = (
         f"{READ_SYSTEM}\x00{vision_model()}\x00{s.gpt_vision_chunk_pages}\x00{max_pages or 0}"
         f"\x00img{s.gpt_vision_render_dpi}\x00passes{s.gpt_vision_passes}/{s.gpt_vision_consensus_max_pages}"
-        f"\x00verify{int(s.gpt_vision_verify)}"
+        f"\x00verify{int(s.gpt_vision_verify)}\x00text{int(s.gpt_vision_text_layer)}"
     )
     digest = hashlib.sha256(data + b"\x00" + stamp.encode("utf-8")).hexdigest()
     return _CACHE_DIR / f"{digest}.json"

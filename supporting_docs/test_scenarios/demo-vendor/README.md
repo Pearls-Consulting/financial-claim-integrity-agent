@@ -56,7 +56,10 @@ the rest of the chain):
 3. At step 1 or 2, flip the claim type to FINAL -> the contract & BoQ gate
    FAILS: 420,000.00 of the contract value would remain
    unclaimed, "change the claim type to periodic" (checks the disbursement
-   record like the client's own reviewers do).
+   record like the client's own reviewers do). The acceptance gate ALSO
+   fails: the COC certifies "دوري — الدفعة الأولى" and the claim now says
+   final (three_way.coc_payment_matches_claim) — the COC was issued for a
+   periodic claim.
 4. Set it back to PERIODIC -> everything passes; the line-item table shows the
    7 billed lines matching the BoQ and the 5 unbilled lines as "not billed
    this period" (normal for periodic claims).

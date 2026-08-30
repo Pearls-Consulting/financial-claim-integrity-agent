@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     gpt_reconcile_effort: str = "low"
     # GPT judge write-up: reasoning effort ("" = model default).
     gpt_judge_effort: str = "low"
+    # Text-only calls (judge write-up, attachment classification): normally
+    # 10-30 s. Bounded so a stalled Azure response cannot hold a run for the
+    # SDK's default 600 s; the caller falls back to its deterministic output.
+    gpt_judge_timeout_seconds: float = 90.0
 
     # Evidence locate (CU OCR of ONE rendered page, billed per page): when the
     # value is not on the cited page, how many pages in total may be OCR'd —

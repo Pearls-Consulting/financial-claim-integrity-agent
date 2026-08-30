@@ -206,7 +206,7 @@ def classify_attachments(markdown_by_file: list[tuple[str, str]]) -> list[Detect
         return _fallback(names)
 
     s = get_settings()
-    client = OpenAI(api_key=s.azure_openai_api_key, base_url=s.azure_openai_base_url)
+    client = OpenAI(api_key=s.azure_openai_api_key, base_url=s.azure_openai_base_url, timeout=s.gpt_judge_timeout_seconds, max_retries=1)
     corpus = "\n\n".join(f"[[FILE {n}]]\n{md}" for n, md in readable)
     try:
         response = client.chat.completions.create(

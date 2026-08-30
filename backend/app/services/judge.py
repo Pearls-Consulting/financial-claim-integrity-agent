@@ -110,7 +110,15 @@ class GptJudge:
             except Exception:
                 pass  # corrupt cache — fall through and re-ask the model
 
-        client = OpenAI(api_key=settings.azure_openai_api_key, base_url=settings.azure_openai_base_url)
+        # A bounded call: the write-up takes ~10-30 s; the SDK's defaults
+        # (600 s timeout, 2 retries) once held a run for 10 minutes on a
+        # stalled Azure response. On timeout the baseline rationale ships.
+        client = OpenAI(
+            api_key=settings.azure_openai_api_key,
+            base_url=settings.azure_openai_base_url,
+            timeout=settings.gpt_judge_timeout_seconds,
+            max_retries=1,
+        )
         try:
             messages = [
                 {"role": "system", "content": system},

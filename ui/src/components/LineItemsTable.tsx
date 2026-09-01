@@ -38,8 +38,16 @@ export function LineItemsTable({
   const { openDocument } = usePdfViewer()
 
   const invLines = invoice?.lines ?? []
-  const invByCode = new Map(invLines.map((l) => [l.item_code, l]))
-  const boqCodes = new Set(boq.map((l) => l.item_code))
+  // Pair each BoQ row with AT MOST one invoice line (a code-keyed Map would
+  // collapse duplicate or empty invoice codes); unpaired lines list after.
+  const paired = new Set<number>()
+  const takeInv = (code: string): InvoiceLine | null => {
+    if (!code) return null
+    const i = invLines.findIndex((l, idx) => !paired.has(idx) && l.item_code === code)
+    if (i === -1) return null
+    paired.add(i)
+    return invLines[i]
+  }
   const rows: Row[] = [
     // BoQ order first, then any invoice lines the contract doesn't know.
     ...boq.map((b) => ({
@@ -47,10 +55,10 @@ export function LineItemsTable({
       description: pick(b.description_en || b.description_ar, b.description_ar),
       unit: b.unit,
       boq: b,
-      inv: invByCode.get(b.item_code) ?? null,
+      inv: takeInv(b.item_code),
     })),
     ...invLines
-      .filter((l) => !boqCodes.has(l.item_code))
+      .filter((_, idx) => !paired.has(idx))
       .map((l) => ({ item_code: l.item_code, description: l.description_ar, unit: "", boq: null, inv: l })),
   ]
   if (rows.length === 0) return null
@@ -146,11 +154,11 @@ export function LineItemsTable({
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => {
+            {rows.map((r, i) => {
               const s = status(r)
               return (
                 <tr
-                  key={r.item_code}
+                  key={`${r.item_code}#${i}`}
                   className={cn("border-border/70 border-t", !r.inv && "text-muted-foreground bg-muted/20")}
                 >
                   <td className="px-2.5 py-1.5 font-medium" dir="ltr">{r.item_code}</td>

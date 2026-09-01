@@ -700,6 +700,10 @@ def _fix_contract_value(contract: Any) -> None:
         return
     if total > 0 and base > 0 and abs(base - total) < 1.0:
         contract["value_base"] = round(total / _VAT, 2)
+    elif total > 0 and base > total and abs(base - total * _VAT) < 1.0:
+        # base > incl-VAT is impossible; base being exactly total×1.15 means
+        # the reader swapped the fields — swap them back.
+        contract["value_base"], contract["value_with_vat"] = total, base
 
 
 def validate_read(data: dict[str, Any], *, page_offset: int = 0) -> dict[str, Any]:
@@ -717,10 +721,17 @@ def validate_read(data: dict[str, Any], *, page_offset: int = 0) -> dict[str, An
     return {"docs": docs.model_dump(), "anchors": anchors}
 
 
-def read_unit(unit: Unit, *, client: Any | None = None) -> dict[str, Any]:
+def read_unit(unit: Unit, *, client: Any | None = None, text: str = "") -> dict[str, Any]:
+    """`text` is the unit's PDF text layer, attached as a hint when usable
+    (text_layer.usable): a priced table read from pixels alone drops or
+    doubles zeros — the text layer's digit strings are exact, and the hint
+    tells the model to copy them for any value it sees in the image."""
     client = client or make_client()
     s = get_settings()
-    content: list[dict[str, Any]] = [*unit_blocks(unit), {"type": "input_text", "text": _user_text(unit)}]
+    content: list[dict[str, Any]] = [*unit_blocks(unit)]
+    if text and text_layer.usable(text):
+        content.append({"type": "input_text", "text": text_layer.hint_block(text)})
+    content.append({"type": "input_text", "text": _user_text(unit)})
     last = ""
     t0 = time.monotonic()
     for attempt in range(2):  # one repair retry on schema mismatch
@@ -796,19 +807,26 @@ def _dedupe(items: list[Any]) -> list[Any]:
 
 
 def dedupe_boq_codes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """One row per item code. A BoQ prints its table once and often again on
-    recap/summary pages (subtotals, no description); when a code repeats,
-    the described table row wins and the first of those is kept — never the
-    last-seen recap figure."""
+    """One row per item code, digit-script blind ("٣٥" and "35" are the same
+    printed number). A BoQ prints its table once and often again on
+    recap/summary pages (subtotals, no description) — and an RFQ may print
+    the whole schedule twice, once priced and once as an unpriced scope
+    table in the other digit script. When a code repeats, a described row
+    beats a bare recap figure, a PRICED described row beats an unpriced
+    scope row, and ties keep the first (page order)."""
+
+    def _rank(r: dict[str, Any]) -> tuple[bool, bool]:
+        described = bool(r.get("description_ar") or r.get("description_en"))
+        return (described and _num(r.get("unit_price")) != 0, described)
+
     best: dict[str, dict[str, Any]] = {}
     order: list[str] = []
     for r in rows:
-        code = str(r.get("item_code") or "")
-        described = bool(r.get("description_ar") or r.get("description_en"))
+        code = str(r.get("item_code") or "").translate(_AR_DIGITS)
         if code not in best:
             best[code] = r
             order.append(code)
-        elif described and not (best[code].get("description_ar") or best[code].get("description_en")):
+        elif _rank(r) > _rank(best[code]):
             best[code] = r
     return [best[c] for c in order]
 
@@ -941,8 +959,8 @@ def _read_units(units: list[Unit], client: Any) -> list[dict[str, Any] | None]:
     reads all failed yields None."""
     s = get_settings()
     # The text layer of every unit, once (PDFium, cheap; "" for images and
-    # scans): a hint to the verify read, and the witness the settled values
-    # are checked against.
+    # scans): a hint to EVERY read — exact digits for tables as much as
+    # headers — and the witness the settled values are checked against.
     texts = [text_layer.unit_text(u) if s.gpt_vision_text_layer else "" for u in units]
     jobs: list[tuple[int, Unit, bool]] = [(ui, u, False) for ui, u in enumerate(units) for _ in range(_passes_for(u))]
     # The focused header re-read: for the first chunk of every file (the
@@ -954,7 +972,7 @@ def _read_units(units: list[Unit], client: Any) -> list[dict[str, Any] | None]:
     def _run(job: tuple[int, Unit, bool]) -> tuple[int, bool, dict[str, Any] | None]:
         ui, unit, verify = job
         try:
-            return ui, verify, (read_key_fields(unit, client=client, text=texts[ui]) if verify else read_unit(unit, client=client))
+            return ui, verify, (read_key_fields(unit, client=client, text=texts[ui]) if verify else read_unit(unit, client=client, text=texts[ui]))
         except Exception:
             logger.exception("GPT %s failed on %s (chunk %d)", "verify" if verify else "reader", unit.path.name, unit.chunk_index + 1)
             return ui, verify, None
@@ -982,7 +1000,7 @@ def _read_units(units: list[Unit], client: Any) -> list[dict[str, Any] | None]:
         if len(reads) == 2 and not _same(a, b):
             logger.info("gpt read %s chunk %d: passes disagree — tie-break read", units[ui].path.name, units[ui].chunk_index + 1)
             try:
-                reads.append(read_unit(units[ui], client=client))
+                reads.append(read_unit(units[ui], client=client, text=texts[ui]))
             except Exception:
                 logger.exception("tie-break read failed on %s", units[ui].path.name)
         settled = vote(reads)
@@ -1006,7 +1024,7 @@ def _file_cache_key(path: Path, data: bytes, *, max_pages: int | None) -> Path:
     stamp = (
         f"{READ_SYSTEM}\x00{vision_model()}\x00{s.gpt_vision_chunk_pages}\x00{max_pages or 0}"
         f"\x00img{s.gpt_vision_render_dpi}\x00passes{s.gpt_vision_passes}/{s.gpt_vision_consensus_max_pages}"
-        f"\x00verify{int(s.gpt_vision_verify)}\x00text{int(s.gpt_vision_text_layer)}"
+        f"\x00verify{int(s.gpt_vision_verify)}\x00text{int(s.gpt_vision_text_layer)}\x00readhint1"
     )
     digest = hashlib.sha256(data + b"\x00" + stamp.encode("utf-8")).hexdigest()
     return _CACHE_DIR / f"{digest}.json"

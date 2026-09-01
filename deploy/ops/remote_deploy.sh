@@ -20,7 +20,7 @@ DATA=$BASE/data
 PORT=9201
 # github.com-claimint = ~/.ssh/config alias on the server pinning this repo's
 # deploy key (the default identity authenticates as an unrelated account).
-REPO="git@github.com-claimint:amin-rm/financial-claim-integrity-agent.git"
+REPO="git@github.com-claimint:Pearls-Consulting/financial-claim-integrity-agent.git"
 REL="$APP/releases/git-${SHA:0:12}"
 DIST_TGZ="/tmp/ui-dist-${SHA}.tgz"
 

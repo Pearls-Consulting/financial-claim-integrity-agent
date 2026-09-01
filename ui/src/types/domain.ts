@@ -170,6 +170,15 @@ export interface DetectedAttachment {
   page?: number // page the identity fields were read from
 }
 
+/** /api/extract/invoice result. is_invoice=false means the reader ran fine
+ *  but found no invoice in the pages; looks_like then names what the document
+ *  resembled ("contract" | "coc" | "receipt" | "unknown"). */
+export interface InvoiceExtract {
+  invoice: InvoiceDoc | null
+  is_invoice: boolean
+  looks_like: string
+}
+
 export interface ClaimDocuments {
   invoice: InvoiceDoc | null
   coc: CocDoc | null

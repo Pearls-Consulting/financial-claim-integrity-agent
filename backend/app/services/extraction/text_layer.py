@@ -352,6 +352,41 @@ def reconcile(docs: dict[str, Any], text: str) -> list[str]:
     coc = docs.get("coc")
     if isinstance(coc, dict):
         changed += _reconcile_coc(coc, norm)
+    con = docs.get("contract")
+    if isinstance(con, dict):
+        changed += _reconcile_contract(con, norm)
+    return changed
+
+
+def _reconcile_contract(con: dict[str, Any], norm: str) -> list[str]:
+    """The contract prints its value once or twice (excl / incl VAT). A value
+    the text does NOT print, with a unique near-variant that IS printed and
+    keeps the pair VAT-consistent (equal to the other value, or exactly 15%
+    apart), takes the variant — the slip that read (14,950,000) as 4,950,000
+    on a page that prints the figure verbatim. A pair left EQUAL by the
+    repair is the one printed figure read into both fields; the excl-VAT
+    side is then derived (statutory 15%), mirroring the read-time rule."""
+    changed: list[str] = []
+    for k, other_k in (("value_with_vat", "value_base"), ("value_base", "value_with_vat")):
+        cur = _f(con.get(k))
+        if cur <= 0 or contains_amount(norm, cur):
+            continue
+        other = _f(con.get(other_k))
+
+        def _fits(v: float) -> bool:
+            if other <= 0:
+                return True  # no second value to corroborate — the printed near-variant is the evidence
+            tol = max(_AMOUNT_TOL, other * 0.001)
+            return _close(v, other, tol) or _close(v, other * (1 + _VAT_RATE), tol) or _close(other, v * (1 + _VAT_RATE), tol)
+
+        repairs = [alt for alt in near_amounts(norm, cur) if _fits(alt)]
+        if len(repairs) == 1:
+            changed.append(f"contract.{k}: {cur!r} -> {repairs[0]!r}")
+            con[k] = repairs[0]
+    base, total = _f(con.get("value_base")), _f(con.get("value_with_vat"))
+    if changed and total > 0 and base > 0 and abs(base - total) < 1.0:
+        con["value_base"] = round(total / (1 + _VAT_RATE), 2)
+        changed.append(f"contract.value_base: {base!r} -> {con['value_base']!r} (one printed figure, VAT-inclusive)")
     return changed
 
 

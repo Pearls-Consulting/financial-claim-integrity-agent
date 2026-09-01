@@ -276,3 +276,118 @@ def test_scan_order_stays_near_the_cited_page():
     assert scan_order(76, 76, 3) == [76, 75, 74]
     assert scan_order(4, 10, 1) == [4]
     assert scan_order(9, 3, 5) == [3, 2, 1]  # out-of-range cite clamps to the last page
+
+
+def test_dedupe_boq_is_digit_script_blind_and_prefers_the_priced_row():
+    # An RFQ that prints its schedule twice — priced (Arabic-Indic codes) and
+    # as an unpriced scope table (ASCII codes) — must not double the BoQ.
+    priced = {"item_code": "٣٥", "description_ar": "تقرير إلكتروني نهائي شامل للمشروع.", "unit_price": 30000.0, "quantity": 1.0, "page": 40}
+    scope = {"item_code": "35", "description_ar": "تقرير إلكتروني نهائي شامل للمشروع", "unit_price": 0.0, "quantity": 1.0, "page": 80}
+    assert gv.dedupe_boq_codes([priced, scope]) == [priced]
+    assert gv.dedupe_boq_codes([scope, priced]) == [priced]  # priced wins regardless of order
+    recap = {"item_code": "٣٥", "description_ar": "", "unit_price": 30000.0, "quantity": 0.0}
+    assert gv.dedupe_boq_codes([recap, scope]) == [scope]  # described still beats a bare recap figure
+
+
+def test_align_codes_matches_unnumbered_invoice_lines_by_description():
+    docs = ClaimDocuments.model_validate({
+        "invoice": {"invoice_no": "I", "lines": [
+            # no item number at all; hamza variant + no trailing dot vs the BoQ's wording
+            {"item_code": "", "description_ar": "تقرير الكتروني نهائي شامل للمشروع", "unit_price": 30000, "quantity": 1, "amount": 34500},
+            {"item_code": "", "description_ar": "دليل المشاريع الواعدة لمنتجات الأسر المنتجة والمشاريع متناهية الصغر", "unit_price": 80000, "quantity": 1, "amount": 92000},
+        ]},
+        "boq": [
+            {"item_code": "٣٥", "description_ar": "تقرير إلكتروني نهائي شامل للمشروع.", "unit_price": 30000, "quantity": 1},
+            {"item_code": "٣٦", "description_ar": "دليل المشاريع المشاركة بالفعالية", "unit_price": 600000, "quantity": 1},
+            {"item_code": "٣٧", "description_ar": "دليل المشاريع الواعدة لمنتجات الأسر المنتجة والمشاريع متناهية الصغر", "unit_price": 80000, "quantity": 1},
+        ],
+    })
+    assert rc.align_codes(docs) == ["(no code) -> ٣٥", "(no code) -> ٣٧"]
+    assert [l.item_code for l in docs.invoice.lines] == ["٣٥", "٣٧"]
+    assert rc.canonical_code("٣٥") == "35"  # both digit scripts are one namespace
+    assert rc.needs(docs, {}) == (False, False)  # aligned: no model call needed
+
+
+def test_align_codes_leaves_ambiguous_descriptions_alone():
+    def _docs(price):
+        return ClaimDocuments.model_validate({
+            "invoice": {"invoice_no": "I", "lines": [
+                {"item_code": "", "description_ar": "توريد كراسي", "unit_price": price, "quantity": 1, "amount": 11.5},
+            ]},
+            "boq": [{"item_code": "1", "description_ar": "توريد كراسي", "unit_price": 10, "quantity": 5},
+                    {"item_code": "2", "description_ar": "توريد كراسي", "unit_price": 12, "quantity": 5}],
+        })
+    docs = _docs(11)  # same wording under two codes, price singles out neither: leave
+    assert rc.align_codes(docs) == []
+    assert docs.invoice.lines[0].item_code == ""
+    assert rc.align_codes(_docs(10)) == ["(no code) -> 1"]  # the printed price disambiguates
+
+
+def test_reconcile_patch_maps_lines_by_index_so_empty_codes_can_align():
+    docs = ClaimDocuments.model_validate({
+        "invoice": {"invoice_no": "I", "lines": [
+            {"item_code": "", "description_ar": "a", "unit_price": 1, "quantity": 1, "amount": 1},
+            {"item_code": "", "description_ar": "b", "unit_price": 1, "quantity": 1, "amount": 1},
+        ]},
+        "boq": [{"item_code": "٣٥", "description_ar": "a", "unit_price": 1, "quantity": 1},
+                {"item_code": "٣٧", "description_ar": "b", "unit_price": 1, "quantity": 1}],
+    })
+    out = rc.apply_patch(docs, {"invoice_line_codes": [
+        {"line": 0, "boq_item_code": "٣٥"},
+        {"line": 1, "boq_item_code": "٣٥"},  # a BoQ item aligns at most once
+        {"line": 9, "boq_item_code": "٣٧"},  # out of range: ignored
+        {"line": 1, "boq_item_code": "99"},  # not a BoQ code: ignored
+    ]})
+    assert [l.item_code for l in out.invoice.lines] == ["٣٥", ""]
+
+
+def test_align_codes_rescues_serial_numbering_that_collides_with_boq_codes():
+    # VRM-900002: the invoice numbers its own lines 1,2 — both REAL BoQ codes —
+    # while actually billing items 5 and 6 (their wording and exact unit prices).
+    docs = ClaimDocuments.model_validate({
+        "invoice": {"invoice_no": "INV-26000116", "lines": [
+            {"item_code": "1", "description_ar": "هاكاثون مصغر\nتصميم وتنفيذ عدد (6) هاكاثونات مصغرة متخصصة في مجال الأعمال، مصممة لتتوافق مع أهداف البرنامج", "unit_price": 257335, "quantity": 2, "amount": 591870.5},
+            {"item_code": "2", "description_ar": "هاكاثون\nتصميم وتنفيذ عدد (6) هاكاثونات متخصصة ومبتكرة في مجالات نوعية تتميز بتوافقها مع الأهداف", "unit_price": 299000, "quantity": 2, "amount": 687700},
+        ]},
+        "boq": [
+            {"item_code": "1", "description_ar": "دراسة شاملة لسوق ريادة الأعمال بمناطق المملكة، تشمل تحليل القطاعات والفرص", "unit_price": 130435, "quantity": 2},
+            {"item_code": "2", "description_ar": "خطة تنفيذية للبرامج وطريقة تنفيذها وفق أفضل المعايير العالمية والمحلية", "unit_price": 156397.61, "quantity": 1},
+            {"item_code": "3", "description_ar": "تصميم وتنفيذ عدد (8) مسرعات أعمال بحلول مبتكرة في كل فرع جادة 30", "unit_price": 182500, "quantity": 8},
+            {"item_code": "4", "description_ar": "تصميم وتنفيذ عدد (17) برنامج احتضان نوعي لمخرجات فعاليات وبرامج جادة 30", "unit_price": 288465, "quantity": 17},
+            {"item_code": "5", "description_ar": "تصميم وتنفيذ عدد (6) هاكاثونات مصغرة متخصصة في مجال الأعمال، مصممة لتتوافق مع أهداف البرنامج", "unit_price": 257335, "quantity": 6},
+            {"item_code": "6", "description_ar": "تصميم وتنفيذ (6) هاكاثونات متخصصة ومبتكرة في مجالات نوعية تتميز بتوافقها مع الأهداف", "unit_price": 299000, "quantity": 6},
+            {"item_code": "7", "description_ar": "تنفيذ تقارير تقييمية بها دراسات جدوى للمشاريع المحتضنة", "unit_price": 3945, "quantity": 80},
+        ],
+    })
+    assert rc.align_codes(docs) == [
+        "1 -> 5 (code collided with an unrelated BoQ item)",
+        "2 -> 6 (code collided with an unrelated BoQ item)",
+    ]
+    assert [l.item_code for l in docs.invoice.lines] == ["5", "6"]
+    assert rc.needs(docs, {}) == (False, False)  # settled — no model call
+
+
+def test_align_codes_trusts_a_plausible_code_and_leaves_price_findings_alone():
+    docs = ClaimDocuments.model_validate({
+        "invoice": {"invoice_no": "I", "lines": [
+            # overbilling the RIGHT item: must stay put — the price rule reports it
+            {"item_code": "1", "description_ar": "دراسة شاملة لسوق ريادة الأعمال بمناطق المملكة", "unit_price": 999999, "quantity": 2, "amount": 999},
+            # terse description but the exact price of its own code: stays
+            {"item_code": "2", "description_ar": "خدمة", "unit_price": 156397.61, "quantity": 1, "amount": 179857.25},
+        ]},
+        "boq": [
+            {"item_code": "1", "description_ar": "دراسة شاملة لسوق ريادة الأعمال بمناطق المملكة، تشمل تحليل القطاعات", "unit_price": 130435, "quantity": 2},
+            {"item_code": "2", "description_ar": "خطة تنفيذية للبرامج وطريقة تنفيذها", "unit_price": 156397.61, "quantity": 1},
+        ],
+    })
+    assert rc.align_codes(docs) == []
+    assert [l.item_code for l in docs.invoice.lines] == ["1", "2"]
+    assert rc.needs(docs, {}) == (False, False)
+
+
+def test_fix_contract_value_swaps_fields_the_reader_crossed():
+    # base cannot exceed the incl-VAT value; base == total×1.15 means the two
+    # figures landed in each other's fields.
+    out = gv.validate_read({"contract": {"contract_no": "C", "value_base": 14950000.0, "value_with_vat": 13000000.0}})
+    c = out["docs"]["contract"]
+    assert c["value_base"] == 13000000.0 and c["value_with_vat"] == 14950000.0

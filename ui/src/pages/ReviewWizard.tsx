@@ -18,6 +18,7 @@ import {
   ReceiptText,
   Sparkles,
   Trash2,
+  TriangleAlert,
   Upload,
   X,
 } from "lucide-react"
@@ -242,6 +243,9 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
   const [invoiceFile, setInvoiceFile] = React.useState<File | null>(null)
   const [extracting, setExtracting] = React.useState(false)
   const [autofillNote, setAutofillNote] = React.useState<"filled" | "manual" | "">("")
+  // "" = the picked file read as an invoice; otherwise what the read says the
+  // document resembles ("contract" | "coc" | "receipt" | "unknown").
+  const [notInvoice, setNotInvoice] = React.useState("")
 
   // -- step 2: contract / BoQ + payment history ------------------------------
   // The contract/BoQ slot takes SEVERAL files (contract, BoQ, appendices):
@@ -380,10 +384,13 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
   const onPickInvoice = async (f: File | null) => {
     setInvoiceFile(f)
     setAutofillNote("")
+    setNotInvoice("")
     if (!f) return
     setExtracting(true)
     try {
-      const doc = await api.extractInvoice(f)
+      const read = await api.extractInvoice(f)
+      if (read && !read.is_invoice) setNotInvoice(read.looks_like || "unknown")
+      const doc = read?.invoice
       if (doc) {
         setFields((prev) => ({
           ...prev,
@@ -716,6 +723,42 @@ export function ReviewWizard({ existing, initialRun }: { existing?: Claim; initi
           })}
         </ol>
       </nav>
+
+      {/* The invoice read's explicit verdict when the step-1 upload doesn't
+          read as a tax invoice — pinned under the tracker so it can't be
+          missed, and cleared the moment the file is replaced. */}
+      {notInvoice && (
+        <div
+          role="alert"
+          className="border-warn/40 bg-warn/10 mt-4 flex items-start gap-2.5 rounded-xl border p-3"
+        >
+          <TriangleAlert className="text-warn mt-0.5 size-4 shrink-0" />
+          <div className="text-sm">
+            <p className="font-medium">
+              {t(
+                "The uploaded document doesn't appear to be a tax invoice.",
+                "المستند المرفوع لا يبدو فاتورة ضريبية."
+              )}
+            </p>
+            <p className="text-muted-foreground mt-0.5 text-xs">
+              {notInvoice === "contract"
+                ? t("It reads like a contract / bill of quantities.", "يبدو أنه عقد / جدول كميات.")
+                : notInvoice === "coc"
+                  ? t("It reads like a certificate of completion.", "يبدو أنه محضر إنجاز.")
+                  : notInvoice === "receipt"
+                    ? t("It reads like a delivery note / receiving record.", "يبدو أنه إشعار تسليم / محضر استلام.")
+                    : t(
+                        "No invoice fields (number, totals, line items) were found in it.",
+                        "لم يُعثر فيه على حقول الفاتورة (الرقم، المبالغ، البنود)."
+                      )}{" "}
+              {t(
+                "Replace it with the vendor's tax invoice (فاتورة ضريبية) before analyzing.",
+                "استبدله بالفاتورة الضريبية الصادرة من المورد قبل التحليل."
+              )}
+            </p>
+          </div>
+        </div>
+      )}
 
       {error && <p className="text-destructive mt-4 text-sm">{error}</p>}
 

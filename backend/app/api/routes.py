@@ -223,16 +223,42 @@ def locate_in_file(claim_id: str, index: int, req: LocateRequest) -> LocateRespo
     return LocateResponse(**result)
 
 
-@router.post("/extract/invoice", response_model=InvoiceDoc | None)
-def extract_invoice(invoice: UploadFile = File(...)) -> InvoiceDoc | None:
+class InvoiceExtract(BaseModel):
+    """What the step-1 invoice read yields. ``is_invoice`` is False when the
+    reader ran fine but found no invoice in the pages — ``looks_like`` then
+    names what the document resembled (contract | coc | receipt | unknown)
+    so the wizard can tell the reviewer explicitly."""
+
+    invoice: InvoiceDoc | None = None
+    is_invoice: bool = True
+    looks_like: str = ""
+
+
+@router.post("/extract/invoice", response_model=InvoiceExtract | None)
+def extract_invoice(invoice: UploadFile = File(...)) -> InvoiceExtract | None:
     """Read one invoice on its own — powers the intake form's autofill.
 
     Null means "no reader available" (mock engine) and the form stays manual.
     The read is disk-cached by content hash, so the later full-claim run
     re-reads this same file for free.
+
+    A read that finishes but finds no invoice in the pages comes back with
+    ``is_invoice=False`` — the wizard shows that verdict explicitly instead
+    of leaving the reviewer to infer it from an empty form.
     """
     docs = _read_single(invoice, "invoice")
-    return docs.invoice if docs else None
+    if docs is None:
+        return None
+    inv = docs.invoice
+    if inv is not None and (inv.invoice_no or inv.total_with_vat or inv.lines):
+        return InvoiceExtract(invoice=inv)
+    # The read finished but the pages hold no invoice — say what they DO hold.
+    looks_like = (
+        "contract"
+        if (docs.contract or docs.boq)
+        else "coc" if docs.coc else "receipt" if docs.receipt else "unknown"
+    )
+    return InvoiceExtract(invoice=None, is_invoice=False, looks_like=looks_like)
 
 
 def _read_single(upload: UploadFile, doc_type: str):

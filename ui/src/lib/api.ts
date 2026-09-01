@@ -1,5 +1,5 @@
 import { emitUnauthorized } from "@/lib/auth-bus"
-import type { Claim, ContractExtract, DetectedAttachment, InvoiceDoc, RunResult, Stage } from "@/types/domain"
+import type { Claim, ContractExtract, DetectedAttachment, InvoiceExtract, RunResult, Stage } from "@/types/domain"
 
 /** Build the error for a failed response. A 401 means the session cookie is
  *  gone/invalid — tell the auth layer so ProtectedRoute bounces to /login.
@@ -40,13 +40,15 @@ export const api = {
     fd.append("step", String(step))
     await fetch(`/api/claims/${id}/progress`, { method: "POST", body: fd })
   },
-  /** Read one invoice for form autofill; null = no reader (mock engine). */
-  extractInvoice: async (file: File): Promise<InvoiceDoc | null> => {
+  /** Read one invoice for form autofill; null = no reader (mock engine).
+   *  A read that finds no invoice in the pages comes back with
+   *  is_invoice=false and looks_like naming what the document resembles. */
+  extractInvoice: async (file: File): Promise<InvoiceExtract | null> => {
     const fd = new FormData()
     fd.append("invoice", file)
     const res = await fetch("/api/extract/invoice", { method: "POST", body: fd })
     if (!res.ok) throw await failure(res, `extract`, true)
-    return res.json() as Promise<InvoiceDoc | null>
+    return res.json() as Promise<InvoiceExtract | null>
   },
   /** Read the contract / BoQ file(s) for the step-2 suggestions (contract
    *  value, end date) — one combined document or several files fused;

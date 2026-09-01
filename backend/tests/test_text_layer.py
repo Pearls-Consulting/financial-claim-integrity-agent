@@ -206,3 +206,30 @@ def test_verify_read_parses_the_coc_net_and_vat(monkeypatch):
     out = gv.read_key_fields(gv.Unit(path=Path("x.pdf"), doc_type="coc"), client=object())
     assert out["coc"]["claim_net"] == 316362.0 and out["coc"]["vat_amount"] == 47454.3
     assert out["coc"]["contract_end_date"] == "2026-04-10" and out["coc"]["invoice_ref"] == "INV/2026/00070"
+
+
+CONTRACT_TEXT = (
+    "قيمة العقد\n"
+    "أولاً: القيمة الإجمالية للعقد هي مبلغ قدره ( 14,950,000 ) أربعة عشر مليون وتسعمائة وخمسون ألف ريال سعودي فقط لا غير\n"
+    "وتشمل كذلك كافة الرسوم والضرائب بما في ذلك ضريبة القيمة المضافة.\n"
+    "رقم العقد: RFQ25/053 تاريخ 2025-09-10\n"
+)
+
+
+def test_reconcile_contract_value_recovers_a_dropped_leading_digit():
+    # VRM-900001: page 6 prints (14,950,000) once, VAT-inclusive; the read kept
+    # it in value_base but emitted value_with_vat as 4,950,000 — dropped ١.
+    docs = {"contract": {"contract_no": "RFQ25/053", "value_base": 14950000.0, "value_with_vat": 4950000.0}}
+    fixed = tl.reconcile(docs, CONTRACT_TEXT)
+    assert any("value_with_vat" in f for f in fixed)
+    assert docs["contract"]["value_with_vat"] == 14950000.0
+    assert docs["contract"]["value_base"] == 13000000.0  # one printed figure, incl-VAT; base derived
+
+
+def test_reconcile_contract_leaves_consistent_or_unwitnessed_values_alone():
+    # base 13,000,000 is not printed, but nothing near it is either: untouched.
+    docs = {"contract": {"contract_no": "RFQ25/053", "value_base": 13000000.0, "value_with_vat": 14950000.0}}
+    assert tl.reconcile(docs, CONTRACT_TEXT) == []
+    # a lone value with no near-variant on the page: untouched
+    docs = {"contract": {"contract_no": "RFQ25/053", "value_with_vat": 8000000.0}}
+    assert tl.reconcile(docs, CONTRACT_TEXT) == []

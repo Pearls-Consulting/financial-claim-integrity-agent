@@ -225,13 +225,19 @@ def test_canonical_code_alignment_only_when_unambiguous():
         ]},
         "boq": [{"item_code": "9.1", "description_ar": "x", "unit_price": 180, "quantity": 5},
                 {"item_code": "6.1", "description_ar": "y", "unit_price": 330, "quantity": 5},
-                {"item_code": "6.10", "description_ar": "y2", "unit_price": 1, "quantity": 5},  # both forms exist: ambiguous, leave
+                {"item_code": "6.10", "description_ar": "y2", "unit_price": 1, "quantity": 5},  # code matches, but desc+price say 6.1
                 {"item_code": "7.1", "description_ar": "z", "unit_price": 250, "quantity": 5},
                 {"item_code": "7.01", "description_ar": "z", "unit_price": 250, "quantity": 5}],
     })
     assert rc.canonical_code("10.10") == "10.1" and rc.canonical_code("OF-101") == "of-101" and rc.canonical_code("2.1.1") == "2.1.1"
-    assert rc.align_codes(docs) == ["9.10 -> 9.1", "7.10 -> 7.1"]
-    assert [l.item_code for l in docs.invoice.lines] == ["9.1", "6.10", "7.1"]
+    # "6.10" exists in the BoQ, but that row (y2 @ 1) is not this line (y @ 330)
+    # while 6.1 matches on wording AND price — evidence outranks code equality.
+    assert rc.align_codes(docs) == [
+        "9.10 -> 9.1",
+        "6.10 -> 6.1 (code collided with an unrelated BoQ item)",
+        "7.10 -> 7.1",
+    ]
+    assert [l.item_code for l in docs.invoice.lines] == ["9.1", "6.1", "7.1"]
 
 
 def test_printed_day_month_year_dates_become_iso():
@@ -391,3 +397,39 @@ def test_fix_contract_value_swaps_fields_the_reader_crossed():
     out = gv.validate_read({"contract": {"contract_no": "C", "value_base": 14950000.0, "value_with_vat": 13000000.0}})
     c = out["docs"]["contract"]
     assert c["value_base"] == 13000000.0 and c["value_with_vat"] == 14950000.0
+
+
+def test_align_codes_rescues_a_paraphrased_line_from_generic_own_row_overlap():
+    # VRM-900002 fresh read (verbatim strings): the invoice paraphrases item
+    # 6's long scope text. Its incidental word overlap with its own (wrong)
+    # row "2" is ~0.54 — an absolute plausibility bar would trust the code —
+    # but item 6 scores ~0.93 AND carries the exact printed unit price:
+    # relative decisiveness moves the line.
+    line2 = (
+        "هاكاثون\nتصميم وتنفيذ (6) هاكاثونات متخصصة ومبتكرة في مجالات نوعية تتميز بتنوعها مع تركيز كل فعالية، "
+        "مع التركيز على تقديم حلول ريادية إبداعية لدعم رواد الأعمال ومستفيدي بنك التنمية من العملاء الحاليين "
+        "والمستهدفين. تنفذ هذه الهاكاثونات بواسطة البنك خلال مدة المشروع، وتضم خلالها محفزات للتعلم وتنمية "
+        "المهارة لكل برنامج حسب ما يتم الاتفاق عليه مع إدارة المشروع والبنك. كما ستتضمن هذه الهاكاثونات تحديات "
+        "نوعية تتضمن إطار \"تحديات تحت 30\"، مما يساهم في تعزيز الابتكار وبناء مجتمع ريادي يلبي احتياجات كل "
+        "منطقة بشكل مبتكر وفعال"
+    )
+    boq6 = (
+        "تصميم وتنفيذ (6) هاكاثونات متخصصة ومبتكرة في مجالات نوعية تتميز بتوافقها مع هوية كل منطقة، مع التركيز "
+        "على تقديم حلول ريادية وإبداعية لدعم رواد الأعمال ومستفيدي بنك التنمية من العملاء الحاليين والمستهدفين. "
+        "تنظم هذه الهاكاثونات بموافقة البنك خلال مدة المشروع، ويقدم خلالها محفزات للتوسع والنمو بنهاية كل برنامج "
+        "حسب ما يتم الاتفاق عليه مع إدارة المشروع بالبنك. كما تتضمن هذه الهاكاثونات تحديات نوعية ضمن إطار "
+        "\"تحديات جدة 30\"، مما يساهم في تعزيز الابتكار وبناء مجتمع ريادي يلبي احتياجات كل منطقة بشكل مبتكر وفعال."
+    )
+    docs = ClaimDocuments.model_validate({
+        "invoice": {"invoice_no": "INV-26000116", "lines": [
+            {"item_code": "2", "description_ar": line2, "unit_price": 299000, "quantity": 2, "amount": 687700},
+        ]},
+        "boq": [
+            {"item_code": "2", "description_ar": "خطة تنفيذية للبرامج وطريقة تنفيذها وفق أفضل المعايير العالمية والمحلية.", "unit_price": 156397.61, "quantity": 1},
+            {"item_code": "5", "description_ar": "تصميم وتنفيذ عدد (6) هاكاثونات مصغرة متخصصة في مجال الأعمال، مصممة لتتوافق مع أهداف البرنامج", "unit_price": 257335, "quantity": 6},
+            {"item_code": "6", "description_ar": boq6, "unit_price": 299000, "quantity": 6},
+        ],
+    })
+    assert rc.align_codes(docs) == ["2 -> 6 (code collided with an unrelated BoQ item)"]
+    assert docs.invoice.lines[0].item_code == "6"
+    assert rc.needs(docs, {}) == (False, False)

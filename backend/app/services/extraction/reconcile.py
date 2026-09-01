@@ -180,9 +180,17 @@ def align_codes(docs: ClaimDocuments) -> list[str]:
         for line in lines:
             price = float(getattr(line, "unit_price", 0.0) or 0.0)
             if line.item_code in by_code:
-                if _code_plausible(line, by_code[line.item_code]):
-                    continue
+                own = by_code[line.item_code]
+                d = normalize_desc(line.description_ar)
+                if not d or (price and abs(own.unit_price - price) <= 0.01):
+                    continue  # nothing to judge by, or its own row corroborates the code
                 target = _best_boq_match(line.description_ar, price, docs.boq, exclude=line.item_code)
+                # Move only when the other row is decisively MORE the line's
+                # own than the row its code points at — a long paraphrase
+                # incidentally covers half the generic wording of any row, so
+                # an absolute bar on the own-row score is not a defense.
+                if target is not None and _target_score(d, price, target, docs.boq) < _boq_strength(d, own) + 0.1:
+                    target = None
                 note = " (code collided with an unrelated BoQ item)"
             else:
                 target = None
@@ -200,19 +208,35 @@ def align_codes(docs: ClaimDocuments) -> list[str]:
     return remaps
 
 
+def _target_score(desc_norm: str, unit_price: float, code: str, boq: list[Any]) -> float:
+    """The score _best_boq_match awarded `code`: wording strength plus the
+    unit-price corroboration bonus."""
+    best = 0.0
+    for b in boq:
+        if b.item_code != code:
+            continue
+        s = _boq_strength(desc_norm, b)
+        if unit_price and abs(b.unit_price - unit_price) <= 0.01:
+            s += 0.05
+        best = max(best, s)
+    return best
+
+
 def _code_plausible(line: Any, ref: Any) -> bool:
-    """Whether the BoQ row a line's code points at looks like the line
-    itself: the description agrees (a mere overbilling of the RIGHT item
-    must stay put for the price rule to report), or the printed unit price
-    is the row's own (a tersely described line billing its real code), or
-    there is no description to judge by — code equality then stands."""
+    """Whether the BoQ row a line's code points at is CORROBORATED as the
+    line itself — used to decide when the reconcile model should look at the
+    codes. The bar is deliberately high (0.75): a long paraphrase covers
+    half of any row's generic wording by accident, and below real agreement
+    the model's judgement is cheap insurance. An overbilled RIGHT item still
+    clears it on wording, so the price rule keeps that finding; an equal
+    printed price clears it for tersely described lines."""
     d = normalize_desc(line.description_ar)
     if not d:
         return True
     price = float(getattr(line, "unit_price", 0.0) or 0.0)
     if price and abs(ref.unit_price - price) <= 0.01:
         return True
-    return _boq_strength(d, ref) >= 0.5
+    return _boq_strength(d, ref) >= 0.75
 
 
 def needs(docs: ClaimDocuments, anchors: dict[str, str]) -> tuple[bool, bool]:

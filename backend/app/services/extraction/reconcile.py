@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
-from app.domain.models import ClaimDocuments
+from app.domain.models import ClaimDocuments, is_deduction_line
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,10 @@ Return ONLY this JSON (no fences, no commentary):
    exactly as given in invoice_lines) to the PO/BoQ item whose description
    denotes the same goods/work. Match MEANING, not bytes: hamza/spelling
    variants (الكتروني = إلكتروني), punctuation, and rewordings of the same
-   scope are the same item; an equal unit_price corroborates. BEWARE: the
+   scope are the same item; an equal unit_price corroborates. A line with a
+   NEGATIVE quantity or amount (استقطاع / deduction, advance-payment
+   recovery, retention) is a payment adjustment, not a BoQ item — such
+   lines are not listed and must never receive a boq_item_code. BEWARE: the
    invoice's own serial numbering can COINCIDE with an unrelated BoQ code —
    code equality proves nothing; judge every line by its description, and
    return a mapping for any line whose current code points at the WRONG BoQ
@@ -178,6 +181,8 @@ def align_codes(docs: ClaimDocuments) -> list[str]:
     for lines in ((docs.invoice.lines if docs.invoice else []), (docs.receipt.lines if docs.receipt else [])):
         taken = {line.item_code for line in lines}
         for line in lines:
+            if is_deduction_line(line):
+                continue  # a payment adjustment: its printed number is not a BoQ code
             price = float(getattr(line, "unit_price", 0.0) or 0.0)
             if line.item_code in by_code:
                 own = by_code[line.item_code]
@@ -249,6 +254,7 @@ def needs(docs: ClaimDocuments, anchors: dict[str, str]) -> tuple[bool, bool]:
     need_codes = bool(inv_lines) and bool(by_code) and any(
         line.item_code not in by_code or not _code_plausible(line, by_code[line.item_code])
         for line in inv_lines
+        if not is_deduction_line(line)
     )
     end = (docs.contract.end_date if docs.contract else "") or ""
     need_date = bool(end) and not _ISO.match(end) and any(anchors.get(k) for k in _ANCHORS)
@@ -261,6 +267,7 @@ def _payload(docs: ClaimDocuments, anchors: dict[str, str], need_codes: bool, ne
         out["invoice_lines"] = [
             {"line": i, "item_code": line.item_code, "description_ar": line.description_ar, "unit_price": line.unit_price}
             for i, line in enumerate(docs.invoice.lines if docs.invoice else [])
+            if not is_deduction_line(line)  # adjustments: indices stay original, rows stay out
         ]
         out["boq_lines"] = [
             {

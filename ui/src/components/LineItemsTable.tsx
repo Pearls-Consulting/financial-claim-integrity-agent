@@ -41,9 +41,13 @@ export function LineItemsTable({
   // Pair each BoQ row with AT MOST one invoice line (a code-keyed Map would
   // collapse duplicate or empty invoice codes); unpaired lines list after.
   const paired = new Set<number>()
+  // A negative line (استقطاع الدفعة المقدمة, retention) is a payment
+  // adjustment, not a billed BoQ item — its printed serial number must not
+  // pair it with the contract row it happens to coincide with.
+  const isDeduction = (l: InvoiceLine) => l.quantity < 0 || l.amount < 0
   const takeInv = (code: string): InvoiceLine | null => {
     if (!code) return null
-    const i = invLines.findIndex((l, idx) => !paired.has(idx) && l.item_code === code)
+    const i = invLines.findIndex((l, idx) => !paired.has(idx) && l.item_code === code && !isDeduction(l))
     if (i === -1) return null
     paired.add(i)
     return invLines[i]
@@ -63,7 +67,8 @@ export function LineItemsTable({
   ]
   if (rows.length === 0) return null
 
-  const billed = rows.filter((r) => r.inv).length
+  const billed = rows.filter((r) => r.boq && r.inv).length
+  const contracted = rows.filter((r) => r.boq).length
   const unbilled = rows.filter((r) => r.boq && !r.inv).length
 
   const docIndex = (docType: "contract_boq" | "invoice", sourceFile?: string): number =>
@@ -109,6 +114,8 @@ export function LineItemsTable({
   )
 
   const status = (r: Row): { cls: string; label: string } => {
+    if (r.inv && isDeduction(r.inv))
+      return { cls: "text-muted-foreground", label: t("Deduction — not a BoQ item", "استقطاع — ليس بنداً من الجدول") }
     if (r.boq && r.inv)
       return Math.abs(r.boq.unit_price - r.inv.unit_price) <= 0.01
         ? { cls: "text-ok", label: t("Price matches BoQ", "السعر مطابق للجدول") }
@@ -126,8 +133,8 @@ export function LineItemsTable({
       </h2>
       <p className="text-muted-foreground mt-0.5 text-xs">
         {t(
-          `${billed} of ${rows.length} contracted line(s) billed in this claim.`,
-          `${billed} من ${rows.length} بنداً تعاقدياً مفوتر في هذه المطالبة.`
+          `${billed} of ${contracted} contracted line(s) billed in this claim.`,
+          `${billed} من ${contracted} بنداً تعاقدياً مفوتر في هذه المطالبة.`
         )}
       </p>
       <div className="border-border/70 mt-3 overflow-x-auto rounded-md border">

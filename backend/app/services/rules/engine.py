@@ -219,18 +219,30 @@ def boq_lines_match(claim: Claim, params: dict) -> CheckOutcome:
     boq = {line.item_code: line for line in claim.documents.boq}
     if inv is None or not inv.lines:
         return CheckOutcome(ok=None, detail_en="No invoice lines to match.", detail_ar="لا توجد بنود فاتورة للمطابقة.")
+    from app.domain.models import is_deduction_line
+
     mismatches: list[dict] = []
+    deductions: list[dict] = []
     for line in inv.lines:
+        if is_deduction_line(line):
+            # استقطاع الدفعة المقدمة / retention: a payment adjustment, not a
+            # BoQ item — its printed serial number is no BoQ code even when
+            # it coincides with one (fielded on VRM-900005).
+            deductions.append({"item": line.item_code, "description": line.description_ar, "amount": line.amount})
+            continue
         ref = boq.get(line.item_code)
         if ref is None:
             mismatches.append({"item": line.item_code, "issue": "not in BoQ"})
         elif abs(ref.unit_price - line.unit_price) > 0.01:
             mismatches.append({"item": line.item_code, "issue": "unit price", "boq": ref.unit_price, "invoice": line.unit_price})
+    matched = len(inv.lines) - len(deductions)
+    note_en = f" {len(deductions)} deduction line(s) (advance-payment recovery) matched to no BoQ item by design." if deductions else ""
+    note_ar = f" {len(deductions)} بند استقطاع (استرداد دفعة مقدمة) لا يُطابق بنود الجدول بطبيعته." if deductions else ""
     return CheckOutcome(
         ok=not mismatches,
-        detail_en=f"{len(mismatches)} invoice line(s) deviate from the BoQ." if mismatches else f"All {len(inv.lines)} invoice lines match the BoQ.",
-        detail_ar=f"{len(mismatches)} بند/بنود لا تطابق جدول الكميات." if mismatches else "جميع بنود الفاتورة مطابقة لجدول الكميات.",
-        evidence={"mismatches": mismatches},
+        detail_en=(f"{len(mismatches)} invoice line(s) deviate from the BoQ." if mismatches else f"All {matched} invoice line(s) match the BoQ.") + note_en,
+        detail_ar=(f"{len(mismatches)} بند/بنود لا تطابق جدول الكميات." if mismatches else "جميع بنود الفاتورة مطابقة لجدول الكميات.") + note_ar,
+        evidence={"mismatches": mismatches, **({"deductions": deductions} if deductions else {})},
     )
 
 

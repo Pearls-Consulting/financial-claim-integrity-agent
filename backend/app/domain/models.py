@@ -66,6 +66,16 @@ class BoqLine(BaseModel):
     source_file: str = ""  # staged file name the value was read from (a claim may hold several contract/BoQ files)
 
 
+def is_deduction_line(line) -> bool:
+    """An invoice line billing NEGATIVE work — استقطاع الدفعة المقدمة
+    (advance-payment recovery), a retention, a credit. These are payment
+    adjustments, not BoQ items: no contract prices negative work, so such a
+    line must never be matched to a BoQ row — even when its printed serial
+    number coincides with a real BoQ code (fielded on VRM-900005: row "5",
+    استقطاع 10% من الدفعة المقدمة, qty -1, collided with BoQ item 5)."""
+    return float(getattr(line, "quantity", 0) or 0) < 0 or float(getattr(line, "amount", 0) or 0) < 0
+
+
 class InvoiceLine(BaseModel):
     item_code: str
     description_ar: str

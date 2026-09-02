@@ -660,6 +660,19 @@ def coc_contract_end_matches(claim: Claim, params: dict) -> CheckOutcome:
     # A contract that states a DURATION has its end date derived (anchor +
     # months); a day or two of slack there is not the COC citing another
     # deadline. The rulepack sets the allowance.
+    if _coc_prints_month_first(claim):
+        return CheckOutcome(
+            ok=True,
+            detail_en=(
+                f"COC prints its dates in month/day order (D365 US locale): its contract end reads "
+                f"{_swap_day_month(coc_end).isoformat()} — the contract's own deadline. (Day-first reading {coc_end.isoformat()} was a format artifact, not another date.)"
+            ),
+            detail_ar=(
+                f"يطبع المحضر تواريخه بترتيب الشهر/اليوم (تنسيق D365 الأمريكي): نهاية العقد فيه "
+                f"{_swap_day_month(coc_end).isoformat()} — وهي موعد العقد نفسه. (القراءة يوم/شهر {coc_end.isoformat()} أثر تنسيق لا تاريخاً آخر.)"
+            ),
+            evidence={"coc_end_date": _swap_day_month(coc_end).isoformat(), "contract_end": end.isoformat(), "date_order": "month-first"},
+        )
     tolerance = int(params.get("tolerance_days", 0))
     apart = abs((coc_end - end).days)
     ok = apart <= tolerance
@@ -746,6 +759,32 @@ def _parse_date(value: str) -> date | None:
     return None
 
 
+def _swap_day_month(d: date | None) -> date | None:
+    """The same print read in the other day/month order; None when the swap
+    is not a real date (day > 12 pins the convention)."""
+    if d is None:
+        return None
+    try:
+        return date(d.year, d.day, d.month)
+    except ValueError:
+        return None
+
+
+def _coc_prints_month_first(claim: Claim) -> bool:
+    """Detect a COC printed in US month/day order — the client's D365 report
+    locale — while the contract (and this system) read day-first. Anchor: the
+    COC's contract-end equals the contract's deadline ONLY once day and month
+    are swapped. Fielded 2026-09-02 (VRM-900005): COC "07/01/2026" meant
+    1 July, was read as 7 January — 175 phantom days. One anchor decides for
+    the whole document; a report never mixes conventions within itself."""
+    coc, contract = claim.documents.coc, claim.documents.contract
+    if coc is None:
+        return False
+    coc_end = _parse_date(coc.contract_end_date)
+    end = _parse_date(claim.contract_end_date) or (_parse_date(contract.end_date) if contract else None)
+    return bool(coc_end and end and coc_end != end and _swap_day_month(coc_end) == end)
+
+
 def _completion_vs_end(claim: Claim) -> tuple[date | None, date | None, str]:
     """(contract end, acceptance date, acceptance label) — the date pair the
     delay inference runs on. Contract end comes from the claim header, else the
@@ -762,7 +801,10 @@ def _completion_vs_end(claim: Claim) -> tuple[date | None, date | None, str]:
     )
     if claim.contract_kind is ContractKind.goods:
         return end, (_parse_date(rec.receipt_date) if rec else None), "delivery date"
-    return end, (_parse_date(coc.coc_date) if coc else None), "COC date"
+    done = _parse_date(coc.coc_date) if coc else None
+    if done and _coc_prints_month_first(claim):
+        done = _swap_day_month(done) or done  # same report, same date order
+    return end, done, "COC date"
 
 
 @check("delay_from_dates")

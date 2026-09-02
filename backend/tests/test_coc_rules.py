@@ -121,3 +121,40 @@ def test_coc_without_the_extra_fields_is_not_penalised():
         assert not ids & {"three_way.coc_invoice_ref", "three_way.coc_amounts_match_invoice", "three_way.coc_payment_matches_claim",
                           "three_way.coc_contract_value", "three_way.coc_award_letter", "final.coc_contract_end"}
     assert claim.claim_type is ClaimType.final  # untouched
+
+
+def test_coc_month_first_dates_recognised_not_flagged_and_delay_uses_the_swap():
+    """Fielded 2026-09-02 (VRM-900005): the D365 COC prints US month/day
+    dates while the contract prints day/month. "07/01/2026" is 1 July; read
+    day-first it became 7 January — 175 phantom days on the contract-end
+    check. The swap-equality anchor recognises the convention and the delay
+    inference reads the COC date in the same order."""
+    claim = _claim()
+    claim.contract_kind = ContractKind.works
+    claim.contract_end_date = "2026-07-01"
+    # day-first misreads of the COC's month-first prints: contract end
+    # "07/01/2026" (1 July) stored as 2026-01-07; COC date "06/01/2026"
+    # (1 June) stored as 2026-01-06.
+    claim.documents.coc = _coc(claim, contract_end_date="2026-01-07", coc_date="2026-01-06")
+    by_rule = _gate(claim, "final_check")
+    f = by_rule["final.coc_contract_end"]
+    assert f.severity is Severity.ok
+    assert f.evidence == {"coc_end_date": "2026-07-01", "contract_end": "2026-07-01", "date_order": "month-first"}
+    # the delay check must cite the swapped acceptance date (1 June), not
+    # the misread (6 January).
+    d = by_rule["final.delay_from_dates"]
+    assert d.severity is Severity.ok
+    assert d.evidence["completion_date"] == "2026-06-01"
+
+
+def test_coc_genuinely_different_end_date_still_fails():
+    """The rescue fires only on swap-EQUALITY — a really different deadline
+    (whose swap is not the contract's date, or not a date at all) keeps
+    failing exactly as before."""
+    claim = _claim()
+    claim.contract_kind = ContractKind.works
+    claim.contract_end_date = "2026-07-01"
+    claim.documents.coc = _coc(claim, contract_end_date="2026-09-15")  # swap invalid (month 15)
+    assert _gate(claim, "final_check")["final.coc_contract_end"].severity is Severity.fail
+    claim.documents.coc = _coc(claim, contract_end_date="2026-03-04")  # swap = 2026-04-03, still not the deadline
+    assert _gate(claim, "final_check")["final.coc_contract_end"].severity is Severity.fail

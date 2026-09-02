@@ -23,3 +23,38 @@ rules:
     check: vat_treatment_declared
     severity: fail
     source: { doc: VAT Implementing Regulations, ref: exemptions }
+
+  - id: prefinance.identity_consistent
+    title_en: One vendor identity across the file (CR & VAT numbers agree)
+    title_ar: هوية واحدة للمورد عبر الملف (تطابق رقم السجل والرقم الضريبي)
+    check: attachment_identity_consistent
+    severity: fail
+    source: { doc: SP-01-04-05-02, ref: step 6 }
+
+  - id: prefinance.vat_matches_invoice
+    title_en: Vendor-file VAT number matches the invoice
+    title_ar: الرقم الضريبي في ملف المورد يطابق الفاتورة
+    check: attachment_vat_matches_invoice
+    severity: fail
+    source: { doc: ZATCA e-invoicing, ref: seller identification }
+
+  - id: prefinance.vendor_name_consistent
+    title_en: Vendor name consistent across file, claim and invoice
+    title_ar: اتساق اسم المنشأة بين الملف والمطالبة والفاتورة
+    check: attachment_vendor_name_consistent
+    severity: warn
+    source: { doc: SP-01-04-05-02, ref: step 6 }
+
+  - id: prefinance.identifier_format
+    title_en: CR / VAT numbers read in the official format
+    title_ar: أرقام السجل التجاري والأرقام الضريبية بالصيغة النظامية
+    check: attachment_id_formats
+    severity: warn
+    source: { doc: MoC / ZATCA registration formats, ref: CR 10 digits; VAT 15 digits }
+
+  - id: prefinance.certificates_valid
+    title_en: Certificates valid at the claim date
+    title_ar: سريان الشهادات بتاريخ المطالبة
+    check: attachment_certificates_valid
+    severity: fail
+    source: { doc: SP-01-04-05-02, ref: step 6 }

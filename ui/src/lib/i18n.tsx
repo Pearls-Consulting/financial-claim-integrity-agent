@@ -52,8 +52,13 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
       setLang,
       toggle: () => setLang((l) => (l === "en" ? "ar" : "en")),
       t: (en, ar) => (lang === "ar" ? ar : en),
-      pick: <T,>(en: T, ar: T | null | undefined): T =>
-        lang === "ar" ? (ar ?? en) : ((en ?? ar) as T),
+      // Fall back across languages when the preferred value is MISSING —
+      // and a blank string is missing: claim headers arrive with one name
+      // slot filled and the other "", whichever language the clerk typed.
+      pick: <T,>(en: T, ar: T | null | undefined): T => {
+        const blank = (v: T | null | undefined) => v == null || (typeof v === "string" && v.trim() === "")
+        return lang === "ar" ? ((blank(ar) ? en : ar) as T) : ((blank(en) ? (ar ?? en) : en) as T)
+      },
     }),
     [lang, dir]
   )

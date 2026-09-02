@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     gpt_vision_concurrency: int = 8  # calls in flight; each holds a chunk's page images + request body (~50 MB) — the demo service runs under a memory cap
     gpt_vision_max_output_tokens: int = 24000  # dense BoQ chunks need room
     gpt_vision_timeout_seconds: float = 300.0
-    gpt_vision_attachment_max_pages: int = 3  # identity docs: read the first pages only
+    gpt_vision_attachment_max_pages: int = 8  # identity docs are 1-2 pages, but vendors scan multi-certificate bundles — read deep enough to see them all
     # Short units (<= consensus_max_pages) are read `passes` times concurrently
     # and majority-voted; a disagreement gets one tie-break read. Catches the
     # occasional digit slip on an invoice without slowing the run.

@@ -14,6 +14,7 @@ counted against the claim).
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -987,6 +988,239 @@ def vat_treatment_declared(claim: Claim, params: dict) -> CheckOutcome:
         ok=ok,
         detail_en="Invoice neither charges VAT nor declares exemption." if not ok else ("VAT-exempt invoice." if inv.vat_exempt else "VAT charged."),
         detail_ar="الفاتورة لا تحتسب ضريبة ولا تصرح بالإعفاء." if not ok else ("فاتورة معفاة من الضريبة." if inv.vat_exempt else "الضريبة محتسبة."),
+    )
+
+
+# --------------------------------------------------------------------------
+# Pre-finance identity / validity cross-checks
+# --------------------------------------------------------------------------
+# The prequalification agent's lesson (pre-qualification-agent, services/
+# comparison.py + screening): an extracted value is a CLAIM TO CHECK, and a
+# mismatch is an accusation — so every comparison here is deterministic,
+# digit-script-normalised, and skips (ok=None) rather than guessing when a
+# document does not print the value.
+
+
+def _att_label(doc_key: str) -> tuple[str, str]:
+    """(label_en, label_ar) for a detected-attachment doc key."""
+    from app.services.extraction.attachments import ATTACHMENT_TYPES
+
+    en, ar, _ = ATTACHMENT_TYPES.get(doc_key, (doc_key or "document", doc_key or "مستند", []))
+    return en, ar
+
+
+_AR_NAME_MARKS = re.compile(r"[ـً-ْٰ]")  # tatweel, harakat
+_AR_NAME_FOLDS = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا", "ى": "ي", "ة": "ه"})
+_NAME_NON_WORD = re.compile(r"[^0-9a-zء-ي]+")
+
+
+def _name_key(s: str) -> str:
+    """A vendor name reduced to what survives any correct reading of the same
+    printed words (hamza/ta-marbuta folds, harakat dropped) — mirrors the BoQ
+    description normalisation in extraction/reconcile.py."""
+    s = unicodedata.normalize("NFKC", (s or "")).translate(_AR_DIGITS_RULES).lower()
+    s = _AR_NAME_MARKS.sub("", s).translate(_AR_NAME_FOLDS)
+    return " ".join(t for t in _NAME_NON_WORD.split(s) if t)
+
+
+def _digits(value: str) -> str:
+    return re.sub(r"\D", "", (value or "").translate(_AR_DIGITS_RULES))
+
+
+@check("attachment_identity_consistent")
+def attachment_identity_consistent(claim: Claim, params: dict) -> CheckOutcome:
+    """Every CR / VAT number printed across the vendor-file documents must be
+    ONE number: a certificate carrying a different registration belongs to a
+    different establishment — wrongly filed, or wrongly read."""
+    dets = claim.documents.detected_attachments
+    evidence: dict = {}
+    problems_en: list[str] = []
+    problems_ar: list[str] = []
+    compared = False
+    for fkey, lab_en, lab_ar in (
+        ("cr_number", "CR number", "رقم السجل التجاري"),
+        ("vat_number", "VAT number", "الرقم الضريبي"),
+    ):
+        vals = [(a.doc_key, a.fields.get(fkey, "")) for a in dets if a.fields.get(fkey)]
+        if not vals:
+            continue
+        evidence[fkey] = {doc: v for doc, v in vals}
+        if len(vals) < 2:
+            continue
+        compared = True
+        if len({_ident_key(v) for _, v in vals}) > 1:
+            listing_en = "; ".join(f"{_att_label(d)[0]}: {v}" for d, v in vals)
+            listing_ar = "؛ ".join(f"{_att_label(d)[1]}: {v}" for d, v in vals)
+            problems_en.append(f"{lab_en} differs across the filed documents ({listing_en})")
+            problems_ar.append(f"{lab_ar} يختلف بين المستندات المرفقة ({listing_ar})")
+    if not compared:
+        return CheckOutcome(
+            ok=None,
+            detail_en="No identifier printed on two documents to cross-check.",
+            detail_ar="لا يوجد رقم هوية مطبوع على مستندين لإجراء المطابقة.",
+        )
+    ok = not problems_en
+    return CheckOutcome(
+        ok=ok,
+        detail_en=("; ".join(problems_en) + ".") if problems_en else "CR and VAT numbers agree across every document that prints them.",
+        detail_ar=("؛ ".join(problems_ar) + ".") if problems_ar else "رقم السجل التجاري والرقم الضريبي متطابقان في كل المستندات التي تطبعهما.",
+        evidence=evidence,
+    )
+
+
+@check("attachment_vat_matches_invoice")
+def attachment_vat_matches_invoice(claim: Claim, params: dict) -> CheckOutcome:
+    """The VAT number on the vendor's certificates vs the seller VAT number
+    on the tax invoice — the biller must be the establishment in the vendor
+    file (the invoice face itself is QR-cross-checked at intake)."""
+    inv = claim.documents.invoice
+    vals = [(a.doc_key, a.fields.get("vat_number", "")) for a in claim.documents.detected_attachments if a.fields.get("vat_number")]
+    if inv is None or not inv.seller_vat_number or not vals:
+        return CheckOutcome(
+            ok=None,
+            detail_en="No VAT number on both sides to compare.",
+            detail_ar="لا يوجد رقم ضريبي في الطرفين للمقارنة.",
+        )
+    inv_key = _ident_key(inv.seller_vat_number)
+    off = [(d, v) for d, v in vals if _ident_key(v) != inv_key]
+    ok = not off
+    listing_en = "; ".join(f"{_att_label(d)[0]}: {v}" for d, v in off)
+    listing_ar = "؛ ".join(f"{_att_label(d)[1]}: {v}" for d, v in off)
+    return CheckOutcome(
+        ok=ok,
+        detail_en=(
+            f"Invoice seller VAT {inv.seller_vat_number} matches the vendor-file documents."
+            if ok
+            else f"Invoice seller VAT {inv.seller_vat_number} differs from the vendor file ({listing_en}) — the biller may not be the establishment on file."
+        ),
+        detail_ar=(
+            f"الرقم الضريبي في الفاتورة {inv.seller_vat_number} يطابق مستندات ملف المورد."
+            if ok
+            else f"الرقم الضريبي في الفاتورة {inv.seller_vat_number} يختلف عن ملف المورد ({listing_ar}) — قد لا يكون مُصدر الفاتورة هو المنشأة المسجلة."
+        ),
+        evidence={"invoice": inv.seller_vat_number, "attachments": {d: v for d, v in vals}},
+    )
+
+
+@check("attachment_vendor_name_consistent")
+def attachment_vendor_name_consistent(claim: Claim, params: dict) -> CheckOutcome:
+    """The establishment name across the vendor file vs the claim header and
+    the invoice. Arabic legal names legitimately print with and without
+    suffixes (…المحدودة), so containment counts as agreement — and a
+    disagreement routes to a human (warn), never an automatic accusation."""
+    entries: list[tuple[str, str, str]] = []
+    if claim.vendor_name_ar:
+        entries.append(("claim form", "نموذج المطالبة", claim.vendor_name_ar))
+    inv = claim.documents.invoice
+    if inv is not None and inv.seller_name_ar:
+        entries.append(("invoice", "الفاتورة", inv.seller_name_ar))
+    for a in claim.documents.detected_attachments:
+        name = a.fields.get("vendor_name_ar", "")
+        if name:
+            en, ar = _att_label(a.doc_key)
+            entries.append((en, ar, name))
+    keyed = [(en, ar, n, _name_key(n)) for en, ar, n in entries if _name_key(n)]
+    if len(keyed) < 2:
+        return CheckOutcome(
+            ok=None,
+            detail_en="Fewer than two vendor names to compare.",
+            detail_ar="لا يوجد اسمان للمنشأة لإجراء المقارنة.",
+        )
+    base_en, base_ar, base_name, base_key = keyed[0]
+    off = [(en, ar, n) for en, ar, n, k in keyed[1:] if not (k == base_key or k in base_key or base_key in k)]
+    ok = not off
+    listing_en = "; ".join(f"{en}: '{n}'" for en, _, n in off)
+    listing_ar = "؛ ".join(f"{ar}: '{n}'" for _, ar, n in off)
+    return CheckOutcome(
+        ok=ok,
+        detail_en=(
+            f"Vendor name consistent across the file ('{base_name}')."
+            if ok
+            else f"The {base_en} names '{base_name}', but not every document agrees ({listing_en})."
+        ),
+        detail_ar=(
+            f"اسم المنشأة متسق عبر الملف ('{base_name}')."
+            if ok
+            else f"الاسم في {base_ar} هو '{base_name}' ولا تتفق معه بعض المستندات ({listing_ar})."
+        ),
+        evidence={"names": {en: n for en, _, n, _k in keyed}},
+    )
+
+
+@check("attachment_id_formats")
+def attachment_id_formats(claim: Claim, params: dict) -> CheckOutcome:
+    """A CR number that is not 10 digits, or a VAT number that is not a valid
+    15-digit ZATCA number, is most likely a misread — a digit dropped or
+    invented somewhere between the page and the record. Warn and point at the
+    document rather than let a falsely attributed number stand."""
+    problems_en: list[str] = []
+    problems_ar: list[str] = []
+    evidence: dict = {}
+    seen = False
+    for a in claim.documents.detected_attachments:
+        en, ar = _att_label(a.doc_key)
+        cr = a.fields.get("cr_number", "")
+        if cr:
+            seen = True
+            if len(_digits(cr)) != 10:
+                problems_en.append(f"{en}: CR number '{cr}' is not a 10-digit registration number")
+                problems_ar.append(f"{ar}: رقم السجل التجاري '{cr}' ليس رقم سجل من 10 أرقام")
+                evidence.setdefault("cr_number", {})[a.doc_key] = cr
+        vat = a.fields.get("vat_number", "")
+        if vat:
+            seen = True
+            if not zatca_qr.vat_number_ok(_digits(vat)):
+                problems_en.append(f"{en}: VAT number '{vat}' is not a valid 15-digit ZATCA number")
+                problems_ar.append(f"{ar}: الرقم الضريبي '{vat}' ليس رقماً ضريبياً نظامياً من 15 رقماً")
+                evidence.setdefault("vat_number", {})[a.doc_key] = vat
+    if not seen:
+        return CheckOutcome(ok=None, detail_en="No CR / VAT numbers read from the vendor file.", detail_ar="لم تُقرأ أرقام سجل أو أرقام ضريبية من ملف المورد.")
+    ok = not problems_en
+    return CheckOutcome(
+        ok=ok,
+        detail_en=("; ".join(problems_en) + ". Verify the read against the document.") if problems_en else "Every CR / VAT number read has the official format.",
+        detail_ar=("؛ ".join(problems_ar) + ". تُراجع القراءة على المستند نفسه.") if problems_ar else "جميع أرقام السجل والأرقام الضريبية المقروءة بالصيغة النظامية.",
+        evidence=evidence,
+    )
+
+
+@check("attachment_certificates_valid")
+def attachment_certificates_valid(claim: Claim, params: dict) -> CheckOutcome:
+    """Zakat / GOSI / CR validity at the claim date — Finance acts on this
+    package later, and an expired certificate bounces it. The comparison is
+    date maths in code (the reader only lifts what is printed); an expiry
+    printed in Hijri is left to the human eye, never miscompared."""
+    watch = [str(d) for d in params.get("documents", ["commercial registration", "zakat certificate", "gosi certificate"])]
+    ref = _parse_date(claim.claim_date) or date.today()
+    expired: list[tuple[str, str, str]] = []
+    evidence: dict = {"as_of": ref.isoformat()}
+    seen = False
+    for a in claim.documents.detected_attachments:
+        if a.doc_key not in watch:
+            continue
+        printed = a.fields.get("expiry_date", "")
+        d = _parse_date(printed) if printed else None
+        if d is None or d.year < 1900:  # not printed, unparseable, or Hijri-printed
+            continue
+        seen = True
+        evidence[a.doc_key] = d.isoformat()
+        if d < ref:
+            en, ar = _att_label(a.doc_key)
+            expired.append((en, ar, d.isoformat()))
+    if not seen:
+        return CheckOutcome(
+            ok=None,
+            detail_en="No comparable (Gregorian) expiry dates read from the certificates.",
+            detail_ar="لا توجد تواريخ انتهاء ميلادية قابلة للمقارنة في الشهادات.",
+        )
+    ok = not expired
+    listing_en = "; ".join(f"{en} expired {iso}" for en, _, iso in expired)
+    listing_ar = "؛ ".join(f"{ar} منتهية منذ {iso}" for _, ar, iso in expired)
+    return CheckOutcome(
+        ok=ok,
+        detail_en=f"All certificates valid as of {ref.isoformat()}." if ok else f"{listing_en} — as of the claim date {ref.isoformat()}.",
+        detail_ar=f"جميع الشهادات سارية حتى {ref.isoformat()}." if ok else f"{listing_ar} — بتاريخ المطالبة {ref.isoformat()}.",
+        evidence=evidence,
     )
 
 

@@ -598,16 +598,21 @@ def update_submission(
             )
         except (json.JSONDecodeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=f"Bad detected_attachments payload: {exc}") from exc
-        by_name = {d.file_name: d for d in detected}
+        by_name: dict[str, list[DetectedAttachment]] = {}
+        for d in detected:
+            by_name.setdefault(d.file_name, []).append(d)
 
         submissions.drop_files(claim, lambda f: f.doc_type.startswith("attachment"))
         final: list[DetectedAttachment] = []
         for upload in real_docs:
-            det = by_name.get(upload.filename or "") or DetectedAttachment(
-                file_name=upload.filename or "file", doc_key=heuristic_doc_key(upload.filename or "")
-            )
-            claim.source_files.append(submissions.stage_file(claim_id, upload, f"attachment:{det.doc_key}"))
-            final.append(det)
+            dets = by_name.get(upload.filename or "") or [
+                DetectedAttachment(file_name=upload.filename or "file", doc_key=heuristic_doc_key(upload.filename or ""))
+            ]
+            # A bundle scan carries several documents — every detection is
+            # kept; the staged file is labeled by the first identified one.
+            primary = next((d.doc_key for d in dets if d.doc_key != "other"), dets[0].doc_key)
+            claim.source_files.append(submissions.stage_file(claim_id, upload, f"attachment:{primary}"))
+            final.extend(dets)
         claim.documents.detected_attachments = final
         keys = {d.doc_key for d in final if d.doc_key != "other"}
         if any(f.doc_type == "contract_boq" for f in claim.source_files):
